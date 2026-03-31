@@ -1,0 +1,19 @@
+# BaseCount — Baseball Analytics Platform
+# Install with: pip install -r requirements.txt
+
+# Data ingestion
+pybaseball==2.2.7
+
+# Database
+duckdb==0.10.3
+
+# Data processing
+pandas==2.2.2
+numpy==1.26.4
+
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Utilities
+python-dotenv==1.0.1
