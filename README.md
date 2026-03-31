@@ -1,0 +1,2 @@
+# basecount
+Baseball Analytics tool
