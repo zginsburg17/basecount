@@ -5,7 +5,7 @@ Ingests pitch-level Statcast data via pybaseball and loads into DuckDB.
 
 import duckdb
 import pandas as pd
-from pybaseball import statcast
+from pybaseball import statcast, playerid_reverse_lookup
 from datetime import datetime, date
 import logging
 import time
@@ -245,6 +245,114 @@ def build_at_bat_rollup(pitches_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Player enrichment
+# ---------------------------------------------------------------------------
+
+def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int:
+    """
+    Fill in full_name, bats, throws, position, and team for player stubs
+    (rows where full_name IS NULL).
+
+    Sources:
+      - full_name  : pybaseball playerid_reverse_lookup (MLBAM key)
+      - bats       : most common `stand` value from pitches (batters)
+      - throws     : most common `p_throws` value from pitches (pitchers)
+      - position   : 'P' if they appear as pitcher_id, else 'B' (heuristic)
+      - team       : most recent pitcher_team / batter_team from pitches
+    """
+    stub_ids = con.execute(
+        "SELECT player_id FROM players WHERE full_name IS NULL"
+    ).fetchdf()["player_id"].tolist()
+
+    if not stub_ids:
+        log.info("No player stubs to enrich.")
+        return 0
+
+    log.info(f"Enriching {len(stub_ids)} player stubs...")
+
+    # --- Lookup names via pybaseball in batches ---
+    name_frames = []
+    for i in range(0, len(stub_ids), batch_size):
+        chunk = stub_ids[i : i + batch_size]
+        try:
+            result = playerid_reverse_lookup(chunk, key_type="mlbam")
+            if result is not None and not result.empty:
+                name_frames.append(result)
+        except Exception as e:
+            log.warning(f"playerid_reverse_lookup failed for batch {i}: {e}")
+        time.sleep(1)
+
+    name_map = {}  # player_id -> full_name
+    if name_frames:
+        names_df = pd.concat(name_frames, ignore_index=True)
+        for _, row in names_df.iterrows():
+            pid = int(row["key_mlbam"])
+            full = f"{row['name_first'].strip().title()} {row['name_last'].strip().title()}"
+            name_map[pid] = full
+
+    # --- Derive bats, throws, position, team from pitch data ---
+    enrichment = con.execute("""
+        WITH pitcher_stats AS (
+            SELECT
+                pitcher_id                          AS player_id,
+                'P'                                 AS position,
+                first(p_throws ORDER BY game_date DESC) FILTER (WHERE p_throws IS NOT NULL)  AS throws,
+                NULL                                AS bats,
+                first(pitcher_team ORDER BY game_date DESC) FILTER (WHERE pitcher_team IS NOT NULL) AS team
+            FROM pitches
+            WHERE pitcher_id IS NOT NULL
+            GROUP BY pitcher_id
+        ),
+        batter_stats AS (
+            SELECT
+                batter_id                           AS player_id,
+                'B'                                 AS position,
+                NULL                                AS throws,
+                first(stand ORDER BY game_date DESC) FILTER (WHERE stand IS NOT NULL) AS bats,
+                first(batter_team ORDER BY game_date DESC) FILTER (WHERE batter_team IS NOT NULL) AS team
+            FROM pitches
+            WHERE batter_id IS NOT NULL
+            GROUP BY batter_id
+        ),
+        combined AS (
+            SELECT player_id, position, throws, bats, team FROM pitcher_stats
+            UNION ALL
+            SELECT player_id, position, throws, bats, team FROM batter_stats
+        )
+        SELECT
+            player_id,
+            -- prefer 'P' if they pitched at all
+            CASE WHEN bool_or(position = 'P') THEN 'P' ELSE 'B' END AS position,
+            first(throws) FILTER (WHERE throws IS NOT NULL)  AS throws,
+            first(bats)   FILTER (WHERE bats   IS NOT NULL)  AS bats,
+            first(team)   FILTER (WHERE team   IS NOT NULL)  AS team
+        FROM combined
+        GROUP BY player_id
+    """).fetchdf()
+
+    updated = 0
+    for _, row in enrichment.iterrows():
+        pid = int(row["player_id"])
+        if pid not in stub_ids:
+            continue
+        full_name = name_map.get(pid)
+        con.execute("""
+            UPDATE players SET
+                full_name = COALESCE(?, full_name),
+                bats      = COALESCE(?, bats),
+                throws    = COALESCE(?, throws),
+                position  = COALESCE(?, position),
+                team      = COALESCE(?, team),
+                updated_at = current_timestamp
+            WHERE player_id = ?
+        """, [full_name, row.get("bats"), row.get("throws"), row.get("position"), row.get("team"), pid])
+        updated += 1
+
+    log.info(f"  Players enriched: {updated} (names resolved: {len(name_map)})")
+    return updated
+
+
+# ---------------------------------------------------------------------------
 # Core ETL
 # ---------------------------------------------------------------------------
 
@@ -276,6 +384,23 @@ def load_date_range(
     log.info(f"  Raw rows fetched: {len(raw)}")
     df = clean_statcast(raw)
 
+    # --- Load players (must come before pitches due to FK constraint) ---
+    player_ids = pd.concat([
+        df[["pitcher_id"]].rename(columns={"pitcher_id": "player_id"}),
+        df[["batter_id"]].rename(columns={"batter_id": "player_id"}),
+    ]).drop_duplicates("player_id").dropna(subset=["player_id"])
+    player_ids["player_id"] = player_ids["player_id"].astype(int)
+    con.execute("INSERT OR IGNORE INTO players (player_id) SELECT player_id FROM player_ids")
+    log.info(f"  Players upserted: {len(player_ids)}")
+
+    # --- Load games (must come before pitches due to FK constraint) ---
+    game_cols = [c for c in ["game_pk", "game_date", "home_team", "away_team"] if c in df.columns]
+    games_df = df[game_cols].drop_duplicates("game_pk").copy()
+    games_df["venue"] = None
+    games_df["season"] = pd.to_datetime(games_df["game_date"]).dt.year
+    con.execute("INSERT OR REPLACE INTO games (game_pk, game_date, home_team, away_team, venue, season) SELECT game_pk, game_date, home_team, away_team, venue, season FROM games_df")
+    log.info(f"  Games upserted: {len(games_df)}")
+
     # --- Load pitches ---
     pitch_cols = [c for c in df.columns if c in [
         "pitch_id", "game_pk", "at_bat_number", "pitch_number",
@@ -298,7 +423,8 @@ def load_date_range(
     ]]
     pitches_df = df[pitch_cols].drop_duplicates("pitch_id")
 
-    con.execute("INSERT OR REPLACE INTO pitches SELECT * FROM pitches_df")
+    col_list = ", ".join(pitch_cols)
+    con.execute(f"INSERT OR REPLACE INTO pitches ({col_list}) SELECT * FROM pitches_df")
     log.info(f"  Pitches upserted: {len(pitches_df)}")
 
     # --- Load at_bats rollup ---
@@ -361,6 +487,8 @@ if __name__ == "__main__":
         start_date=week_ago.strftime("%Y-%m-%d"),
         end_date=today.strftime("%Y-%m-%d"),
     )
+    enrich_players(con)
 
     # To backfill a full season, uncomment:
     # backfill_season(con, season=2024)
+    # After a full backfill, run enrich_players(con) once to populate all player metadata.
