@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>BaseCount — Baseball Analytics Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;700;900&family=Syne:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:         #0a0b0f;
+    --surface:    #111318;
+    --surface2:   #1a1d26;
+    --border:     #1f2332;
+    --accent:     #c8f04e;       /* sharp lime — baseball green */
+    --accent2:    #e85d3a;       /* burnt orange */
+    --accent3:    #5b8fff;       /* stat blue */
+    --text:       #e8eaf0;
+    --muted:      #5a5f72;
+    --mono:       'DM Mono', monospace;
+    --display:    'Playfair Display', serif;
+    --sans:       'Syne', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Noise texture overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.035'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── Layout ── */
+  .shell {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 56px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ── Top bar ── */
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--border);
+    gap: 20px;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+  }
+
+  .logo {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: -0.5px;
+    color: var(--text);
+  }
+  .logo span { color: var(--accent); }
+
+  .tagline {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-left: 4px;
+  }
+
+  .topbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .season-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 3px 10px;
+    border-radius: 2px;
+    letter-spacing: 0.06em;
+  }
+
+  .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent2);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--surface);
+  }
+
+  .nav-section-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 18px 20px 6px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 20px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border-left: 2px solid transparent;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active {
+    border-left-color: var(--accent);
+    background: var(--surface2);
+    color: var(--accent);
+  }
+  .nav-icon { font-size: 14px; }
+
+  /* ── Main content ── */
+  .main {
+    padding: 32px 36px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  /* ── Page header ── */
+  .page-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+  .page-title {
+    font-family: var(--display);
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.5px;
+  }
+  .page-title em {
+    font-style: normal;
+    color: var(--accent);
+  }
+  .page-subtitle {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Count selector ── */
+  .count-selector-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+
+  .selector-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 8px;
+  }
+
+  .count-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 36px);
+    grid-template-rows: repeat(3, 36px);
+    gap: 4px;
+  }
+
+  .count-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.12s;
+    color: var(--muted);
+    background: var(--bg);
+    user-select: none;
+  }
+  .count-cell:hover { border-color: var(--accent); color: var(--text); }
+  .count-cell.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #000;
+    font-weight: 500;
+  }
+  .count-cell.invalid { opacity: 0.15; pointer-events: none; }
+
+  .outs-selector { display: flex; gap: 6px; }
+  .out-btn {
+    width: 36px; height: 36px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .out-btn:hover { border-color: var(--accent2); color: var(--text); }
+  .out-btn.active {
+    background: var(--accent2);
+    border-color: var(--accent2);
+    color: #fff;
+  }
+
+  .current-situation {
+    margin-left: auto;
+    text-align: right;
+  }
+  .situation-count {
+    font-family: var(--display);
+    font-size: 48px;
+    font-weight: 900;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: -2px;
+  }
+  .situation-meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  /* ── Stat cards ── */
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+    animation: fadeUp 0.4s ease both;
+  }
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.3s ease;
+  }
+  .stat-card:hover::before { transform: scaleX(1); }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .stat-card:nth-child(1) { animation-delay: 0.05s; }
+  .stat-card:nth-child(2) { animation-delay: 0.10s; }
+  .stat-card:nth-child(3) { animation-delay: 0.15s; }
+  .stat-card:nth-child(4) { animation-delay: 0.20s; }
+
+  .stat-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .stat-value {
+    font-family: var(--display);
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -1px;
+  }
+  .stat-delta {
+    font-family: var(--mono);
+    font-size: 10px;
+    margin-top: 6px;
+    color: var(--muted);
+  }
+  .stat-delta.up   { color: var(--accent); }
+  .stat-delta.down { color: var(--accent2); }
+
+  /* ── Two-column panel layout ── */
+  .panel-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .panel-row.thirds {
+    grid-template-columns: 2fr 1fr;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 20px 22px;
+  }
+  .panel-title {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .panel-title-badge {
+    font-family: var(--mono);
+    font-size: 9px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    color: var(--accent3);
+    border-radius: 2px;
+    letter-spacing: 0.06em;
+  }
+
+  /* ── Count outcome heatmap ── */
+  .count-matrix {
+    display: grid;
+    grid-template-columns: 20px repeat(4, 1fr);
+    grid-template-rows: 20px repeat(3, 1fr);
+    gap: 3px;
+    height: 180px;
+  }
+  .matrix-axis-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .matrix-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 2px;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    transition: transform 0.15s;
+    cursor: default;
+    position: relative;
+  }
+  .matrix-cell:hover { transform: scale(1.05); z-index: 2; }
+  .matrix-cell .cell-count { font-size: 9px; opacity: 0.7; margin-bottom: 2px; }
+  .matrix-cell .cell-val   { font-size: 12px; }
+
+  /* ── At-bat timeline ── */
+  .ab-timeline {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .pitch-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    width: 72px;
+    animation: fadeUp 0.3s ease both;
+  }
+  .pitch-connector {
+    flex-shrink: 0;
+    width: 16px;
+    height: 1px;
+    background: var(--border);
+  }
+  .pitch-bubble {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    border: 2px solid transparent;
+    transition: all 0.2s;
+    cursor: default;
+  }
+  .pitch-bubble:hover { transform: scale(1.12); }
+  .pitch-bubble.ball          { background: rgba(91,143,255,0.15); border-color: var(--accent3); color: var(--accent3); }
+  .pitch-bubble.strike        { background: rgba(232,93,58,0.15);  border-color: var(--accent2); color: var(--accent2); }
+  .pitch-bubble.foul          { background: rgba(200,240,78,0.1);  border-color: var(--accent);  color: var(--accent); }
+  .pitch-bubble.contact       { background: rgba(200,240,78,0.25); border-color: var(--accent);  color: #000; }
+  .pitch-meta {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .pitch-count-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--accent);
+  }
+
+  /* ── Leaderboard table ── */
+  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table th {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-align: left;
+    padding: 0 10px 10px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .data-table th:hover { color: var(--text); }
+  .data-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table tr:hover td { background: var(--surface2); }
+  .td-rank { color: var(--muted); font-size: 10px; }
+  .td-name { font-family: var(--sans); font-weight: 600; font-size: 13px; color: var(--text); }
+  .td-stat { text-align: right; }
+  .td-bar-cell { width: 80px; }
+  .bar-bg { height: 4px; background: var(--surface2); border-radius: 2px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.6s ease; }
+  .td-highlight { color: var(--accent); font-weight: 500; }
+
+  /* ── Zone chart placeholder ── */
+  .zone-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 3px;
+    aspect-ratio: 1;
+    max-width: 160px;
+    margin: auto;
+  }
+  .zone-cell {
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    transition: transform 0.15s;
+    cursor: default;
+  }
+  .zone-cell:hover { transform: scale(1.05); }
+
+  /* ── Filter pills ── */
+  .filter-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .filter-pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.12s;
+    text-transform: uppercase;
+  }
+  .filter-pill:hover { border-color: var(--accent3); color: var(--text); }
+  .filter-pill.active { border-color: var(--accent3); background: rgba(91,143,255,0.1); color: var(--accent3); }
+
+  /* ── Canvas ── */
+  canvas { max-height: 180px; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="logo">Base<span>Count</span></div>
+    <div class="tagline">// Statcast Analytics Platform</div>
+    <div class="topbar-right">
+      <div class="live-dot"></div>
+      <div class="season-badge">2024 MLB</div>
+    </div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section-label">Explore</div>
+    <div class="nav-item active" onclick="setPage('count')">
+      <span class="nav-icon">⬡</span> Count State
+    </div>
+    <div class="nav-item" onclick="setPage('pitcher')">
+      <span class="nav-icon">◎</span> Pitcher Profile
+    </div>
+    <div class="nav-item" onclick="setPage('atbat')">
+      <span class="nav-icon">◷</span> At-Bat Timeline
+    </div>
+    <div class="nav-section-label">Leaderboards</div>
+    <div class="nav-item" onclick="setPage('stuff')">
+      <span class="nav-icon">↑</span> Stuff Quality
+    </div>
+    <div class="nav-item" onclick="setPage('situational')">
+      <span class="nav-icon">⊞</span> Situational
+    </div>
+    <div class="nav-section-label">Data</div>
+    <div class="nav-item">
+      <span class="nav-icon">⬡</span> MLB
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main" id="main-content">
+    <!-- Count State Page (default) -->
+    <div id="page-count">
+
+      <div class="page-header">
+        <div>
+          <div class="page-title">Count <em>State</em> Analysis</div>
+          <div class="page-subtitle">// select a count and outs situation to filter all metrics below</div>
+        </div>
+      </div>
+
+      <!-- Count selector -->
+      <div class="count-selector-panel">
+        <div>
+          <div class="selector-label">Select Count (Balls–Strikes)</div>
+          <div class="count-grid" id="count-grid"></div>
+        </div>
+        <div>
+          <div class="selector-label">Outs</div>
+          <div class="outs-selector" id="outs-selector">
+            <button class="out-btn active" data-outs="0">0</button>
+            <button class="out-btn" data-outs="1">1</button>
+            <button class="out-btn" data-outs="2">2</button>
+          </div>
+        </div>
+        <div class="current-situation">
+          <div class="situation-count" id="situation-display">2–2</div>
+          <div class="situation-meta" id="situation-meta">1 out · bases empty</div>
+        </div>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="stat-row" id="stat-cards">
+        <div class="stat-card">
+          <div class="stat-label">League xwOBA</div>
+          <div class="stat-value" style="color:var(--accent)">0.341</div>
+          <div class="stat-delta up">↑ +0.028 vs 0–0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">K Rate</div>
+          <div class="stat-value" style="color:var(--accent2)">34.1%</div>
+          <div class="stat-delta down">↑ +18.2pp vs avg</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Walk Rate</div>
+          <div class="stat-value" style="color:var(--accent3)">12.8%</div>
+          <div class="stat-delta">— 2-strike context</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Whiff %</div>
+          <div class="stat-value">28.4%</div>
+          <div class="stat-delta up">↑ highest in full count</div>
+        </div>
+      </div>
+
+      <!-- Charts row -->
+      <div class="panel-row">
+        <div class="panel">
+          <div class="panel-title">
+            Outcome Distribution by Count
+            <span class="panel-title-badge">MATRIX</span>
+          </div>
+          <div style="display:flex;gap:24px;align-items:flex-start">
+            <div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:6px;letter-spacing:.1em;text-transform:uppercase">← Strikes</div>
+              <div class="count-matrix" id="outcome-matrix"></div>
+            </div>
+            <div style="flex:1">
+              <canvas id="outcome-chart"></canvas>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:8px;letter-spacing:.06em">
+                K% for selected count vs. season avg
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">
+            Strike Zone Tendencies
+            <span class="panel-title-badge">LOCATION</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:12px">
+            <div class="zone-grid" id="zone-chart"></div>
+            <div style="display:flex;gap:12px;font-family:var(--mono);font-size:9px;color:var(--muted)">
+              <span style="color:var(--accent3)">■</span> Pitch frequency
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- At-bat timeline -->
+      <div class="panel">
+        <div class="panel-title">
+          Sample At-Bat Timeline
+          <span class="panel-title-badge">SEQUENCE</span>
+        </div>
+        <div class="ab-timeline" id="ab-timeline"></div>
+        <div style="margin-top:14px;font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:.06em">
+          OUTCOME: <span style="color:var(--accent2)">STRIKEOUT SWINGING</span>
+          &nbsp;·&nbsp; 5 PITCHES &nbsp;·&nbsp; FINAL COUNT: 2–2
+        </div>
+      </div>
+
+      <!-- Leaderboard -->
+      <div class="panel">
+        <div class="panel-title">
+          Batter Leaderboard — 2–2, 1 Out
+          <div class="filter-row">
+            <div class="filter-pill active">xwOBA</div>
+            <div class="filter-pill">K%</div>
+            <div class="filter-pill">Whiff%</div>
+          </div>
+        </div>
+        <table class="data-table" id="leaderboard-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Player</th>
+              <th class="td-stat">PA</th>
+              <th class="td-stat">xwOBA</th>
+              <th class="td-stat">K%</th>
+              <th class="td-stat">Whiff%</th>
+              <th class="td-bar-cell"></th>
+            </tr>
+          </thead>
+          <tbody id="leaderboard-body"></tbody>
+        </table>
+      </div>
+
+    </div><!-- /page-count -->
+  </main>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const state = { balls: 2, strikes: 2, outs: 1, page: 'count' };
+
+// ── Count grid ─────────────────────────────────────────────────────────────
+function buildCountGrid() {
+  const grid = document.getElementById('count-grid');
+  grid.innerHTML = '';
+  // Columns = balls 0-3, Rows = strikes 0-2
+  // Header row: ball labels
+  const corner = document.createElement('div'); corner.className = 'matrix-axis-label'; grid.appendChild(corner);
+  for (let b = 0; b <= 3; b++) {
+    const el = document.createElement('div');
+    el.className = 'matrix-axis-label';
+    el.style.fontFamily = 'var(--mono)'; el.style.fontSize = '9px';
+    el.textContent = b + 'B';
+    grid.appendChild(el);
+  }
+  for (let s = 0; s <= 2; s++) {
+    const rowLabel = document.createElement('div');
+    rowLabel.className = 'matrix-axis-label';
+    rowLabel.textContent = s + 'S';
+    grid.appendChild(rowLabel);
+    for (let b = 0; b <= 3; b++) {
+      const cell = document.createElement('div');
+      const isActive = b === state.balls && s === state.strikes;
+      cell.className = 'count-cell' + (isActive ? ' active' : '');
+      cell.textContent = b + '-' + s;
+      cell.dataset.balls = b; cell.dataset.strikes = s;
+      cell.addEventListener('click', () => {
+        state.balls = b; state.strikes = s;
+        buildCountGrid(); updateDisplay();
+      });
+      grid.appendChild(cell);
+    }
+  }
+}
+
+// ── Outs selector ──────────────────────────────────────────────────────────
+document.querySelectorAll('.out-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.out-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.outs = +btn.dataset.outs;
+    updateDisplay();
+  });
+});
+
+// ── Situation display ───────────────────────────────────────────────────────
+function updateDisplay() {
+  document.getElementById('situation-display').textContent = state.balls + '–' + state.strikes;
+  const outsText = ['0 outs','1 out','2 outs'][state.outs];
+  document.getElementById('situation-meta').textContent = outsText + ' · bases empty';
+  renderLeaderboard();
+  renderTimeline();
+}
+
+// ── Outcome matrix ──────────────────────────────────────────────────────────
+const matrixData = {
+  // [balls][strikes] = { k_pct, xwoba, color }
+  '0-0': { k:5,  x:.330, label:'0-0' },
+  '1-0': { k:7,  x:.345, label:'1-0' },
+  '2-0': { k:4,  x:.380, label:'2-0' },
+  '3-0': { k:1,  x:.420, label:'3-0' },
+  '0-1': { k:12, x:.290, label:'0-1' },
+  '1-1': { k:14, x:.305, label:'1-1' },
+  '2-1': { k:9,  x:.350, label:'2-1' },
+  '3-1': { k:5,  x:.400, label:'3-1' },
+  '0-2': { k:32, x:.220, label:'0-2' },
+  '1-2': { k:28, x:.240, label:'1-2' },
+  '2-2': { k:34, x:.260, label:'2-2' },
+  '3-2': { k:26, x:.310, label:'3-2' },
+};
+
+function buildOutcomeMatrix() {
+  const container = document.getElementById('outcome-matrix');
+  container.innerHTML = '';
+  // axis label row
+  const c = document.createElement('div'); c.className = 'matrix-axis-label'; container.appendChild(c);
+  ['0B','1B','2B','3B'].forEach(l => {
+    const el = document.createElement('div'); el.className = 'matrix-axis-label';
+    el.style.cssText='font-family:var(--mono);font-size:9px;color:var(--muted)';
+    el.textContent = l; container.appendChild(el);
+  });
+  for (let s = 0; s <= 2; s++) {
+    const rl = document.createElement('div'); rl.className = 'matrix-axis-label';
+    rl.style.cssText='font-family:var(--mono);font-size:9px;color:var(--muted)';
+    rl.textContent = s+'S'; container.appendChild(rl);
+    for (let b = 0; b <= 3; b++) {
+      const key = b+'-'+s;
+      const d = matrixData[key] || { k:15, x:.300 };
+      const cell = document.createElement('div');
+      cell.className = 'matrix-cell';
+      const pct = d.k / 40;
+      const r = Math.round(30 + pct * 200);
+      const g = Math.round(200 - pct * 180);
+      const bl = 60;
+      const isSel = b === state.balls && s === state.strikes;
+      cell.style.background = isSel
+        ? 'var(--accent)'
+        : `rgba(${r},${g},${bl},${0.15 + pct * 0.5})`;
+      cell.style.color = isSel ? '#000' : 'var(--text)';
+      cell.style.outline = isSel ? '2px solid var(--accent)' : 'none';
+      cell.innerHTML = `<span class="cell-val">${d.k}%</span>`;
+      cell.title = `${b}-${s}: K%=${d.k}%, xwOBA=${d.x}`;
+      cell.addEventListener('click', () => {
+        state.balls = b; state.strikes = s;
+        buildCountGrid(); buildOutcomeMatrix(); updateDisplay();
+      });
+      container.appendChild(cell);
+    }
+  }
+}
+
+// ── Outcome Chart ───────────────────────────────────────────────────────────
+let outcomeChart;
+function buildOutcomeChart() {
+  const ctx = document.getElementById('outcome-chart').getContext('2d');
+  const counts = Object.keys(matrixData);
+  const kPcts  = counts.map(k => matrixData[k].k);
+  const colors = counts.map(k => {
+    const [b,s] = k.split('-').map(Number);
+    return b === state.balls && s === state.strikes
+      ? 'rgba(200,240,78,0.85)'
+      : 'rgba(91,143,255,0.35)';
+  });
+  if (outcomeChart) outcomeChart.destroy();
+  outcomeChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: counts,
+      datasets: [{ data: kPcts, backgroundColor: colors, borderRadius: 2, borderSkipped: false }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { family: 'DM Mono', size: 9 }, color: '#5a5f72' }, grid: { color: '#1f2332' } },
+        y: { ticks: { font: { family: 'DM Mono', size: 9 }, color: '#5a5f72' }, grid: { color: '#1f2332' }, title: { display: true, text: 'K%', font:{family:'DM Mono', size:9}, color:'#5a5f72' } }
+      }
+    }
+  });
+}
+
+// ── Zone chart ──────────────────────────────────────────────────────────────
+function buildZoneChart() {
+  const grid = document.getElementById('zone-chart');
+  grid.innerHTML = '';
+  // 3x3, higher frequency = more intense blue
+  const freqs = [
+    [12, 18, 10],
+    [20, 28, 22],
+    [14, 19, 11],
+  ];
+  freqs.forEach(row => {
+    row.forEach(f => {
+      const cell = document.createElement('div');
+      cell.className = 'zone-cell';
+      const pct = f / 30;
+      cell.style.background = `rgba(91,143,255,${0.05 + pct * 0.75})`;
+      cell.style.color = pct > 0.5 ? '#fff' : 'var(--muted)';
+      cell.textContent = f + '%';
+      grid.appendChild(cell);
+    });
+  });
+}
+
+// ── Timeline ────────────────────────────────────────────────────────────────
+const sampleABs = {
+  '2-2-1': [
+    { count:'0-0', type:'FF', velo:95.2, result:'ball',   cls:'ball',   desc:'Ball' },
+    { count:'1-0', type:'FF', velo:94.8, result:'strike', cls:'strike', desc:'Called ↑' },
+    { count:'1-1', type:'SL', velo:84.1, result:'ball',   cls:'ball',   desc:'Ball' },
+    { count:'2-1', type:'SL', velo:83.7, result:'foul',   cls:'foul',   desc:'Foul' },
+    { count:'2-2', type:'CH', velo:86.0, result:'K',      cls:'strike', desc:'Swinging ↑' },
+  ],
+  '3-2-2': [
+    { count:'0-0', type:'FF', velo:96.1, result:'ball',   cls:'ball',   desc:'Ball' },
+    { count:'1-0', type:'FF', velo:95.8, result:'ball',   cls:'ball',   desc:'Ball' },
+    { count:'2-0', type:'FF', velo:95.2, result:'ball',   cls:'ball',   desc:'Ball' },
+    { count:'3-0', type:'FF', velo:94.9, result:'strike', cls:'strike', desc:'Called ↑' },
+    { count:'3-1', type:'SL', velo:84.3, result:'foul',   cls:'foul',   desc:'Foul' },
+    { count:'3-2', type:'SL', velo:83.9, result:'1B',     cls:'contact',desc:'Single ◎' },
+  ],
+};
+
+function renderTimeline() {
+  const key = state.balls + '-' + state.strikes + '-' + state.outs;
+  const pitches = sampleABs[key] || sampleABs['2-2-1'];
+  const container = document.getElementById('ab-timeline');
+  container.innerHTML = '';
+  pitches.forEach((p, i) => {
+    if (i > 0) {
+      const conn = document.createElement('div'); conn.className = 'pitch-connector';
+      container.appendChild(conn);
+    }
+    const node = document.createElement('div'); node.className = 'pitch-node';
+    node.style.animationDelay = (i * 0.07) + 's';
+    node.innerHTML = `
+      <div class="pitch-count-label">${p.count}</div>
+      <div class="pitch-bubble ${p.cls}" title="${p.type} ${p.velo}mph">${p.type}</div>
+      <div class="pitch-meta">${p.velo}mph<br/>${p.desc}</div>
+    `;
+    container.appendChild(node);
+  });
+}
+
+// ── Leaderboard ─────────────────────────────────────────────────────────────
+const playerData = [
+  { name:'F. Freeman',   pa:87,  xwoba:.398, k:18.4, whiff:22.1 },
+  { name:'P. Goldschmidt', pa:72, xwoba:.381, k:22.1, whiff:27.3 },
+  { name:'M. Olson',    pa:81,  xwoba:.370, k:24.7, whiff:29.8 },
+  { name:'T. Turner',   pa:94,  xwoba:.362, k:19.2, whiff:21.0 },
+  { name:'A. Judge',    pa:78,  xwoba:.344, k:28.3, whiff:34.1 },
+  { name:'P. Alonso',   pa:91,  xwoba:.330, k:31.2, whiff:38.4 },
+  { name:'K. Tucker',   pa:68,  xwoba:.319, k:22.0, whiff:26.7 },
+  { name:'G. Stanton',  pa:62,  xwoba:.298, k:34.8, whiff:41.2 },
+];
+
+function renderLeaderboard() {
+  const tbody = document.getElementById('leaderboard-body');
+  tbody.innerHTML = '';
+  const maxX = Math.max(...playerData.map(p => p.xwoba));
+  playerData.forEach((p, i) => {
+    const pct = (p.xwoba / maxX * 100).toFixed(0);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="td-rank">${i+1}</td>
+      <td class="td-name">${p.name}</td>
+      <td class="td-stat" style="color:var(--muted)">${p.pa}</td>
+      <td class="td-stat td-highlight">${p.xwoba.toFixed(3)}</td>
+      <td class="td-stat" style="color:var(--accent2)">${p.k.toFixed(1)}%</td>
+      <td class="td-stat" style="color:var(--muted)">${p.whiff.toFixed(1)}%</td>
+      <td class="td-bar-cell">
+        <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Page nav ────────────────────────────────────────────────────────────────
+function setPage(page) {
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+buildCountGrid();
+buildOutcomeMatrix();
+buildOutcomeChart();
+buildZoneChart();
+renderTimeline();
+renderLeaderboard();
+</script>
+</body>
+</html>
