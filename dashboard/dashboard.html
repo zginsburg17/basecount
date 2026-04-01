@@ -272,6 +272,20 @@
             <div class="filter-pill" data-s="whiff">Whiff%</div>
           </div>
         </div>
+        <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Limit</label>
+            <input type="number" id="lb-limit" value="10" min="5" max="50" style="width:60px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Season</label>
+            <input type="number" id="lb-season" value="2024" min="2015" max="2030" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Min PA</label>
+            <input type="number" id="lb-min-pa" value="50" min="1" max="500" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+          </div>
+        </div>
         <table class="data-table">
           <thead><tr>
             <th>#</th><th>Player</th>
@@ -1118,42 +1132,46 @@ function buildOutcomeChart() {
   });
 }
 
-function renderCountLeaderboard() {
+async function renderCountLeaderboard() {
   const { balls, strikes, sort } = state.count;
-  const isAllCounts = balls === null || strikes === null;
-  const key = isAllCounts ? null : `${balls}-${strikes}`;
+  const limit = document.getElementById('lb-limit').value || 10;
+  const season = document.getElementById('lb-season').value || 2024;
+  const minPa = document.getElementById('lb-min-pa').value || 50;
 
-  let data = batterLeaderboard.map(p => {
-    // Map API response to expected format
-    return {
-      name: p.batter_name,
-      pa: p.pa,
-      xwoba: p.xwoba,
-      avg: p.avg || 0,
-      k: (p.k_pct || 0) * 100,  // API returns decimal, convert to percentage
-      whiff: 22,  // Default value
-    };
-  });
+  try {
+    const response = await fetch(`${API_BASE}/api/leaderboard/batting?season=${season}&limit=${limit}&min_pa=${minPa}`);
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    const data = await response.json();
 
-  data.sort((a,b) => sort==='k' || sort==='whiff' ? b[sort]-a[sort] : b[sort]-a[sort]);
-  const maxX = Math.max(...data.map(p=>p.xwoba), 0.001);
-  const tbody = document.getElementById('count-lb-body');
-  tbody.innerHTML = '';
-  data.forEach((p,i) => {
-    const pct = (p.xwoba/maxX*100).toFixed(0);
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="td-rank">${i+1}</td>
-      <td class="td-name">${p.name}</td>
-      <td class="td-stat" style="color:var(--muted)">${p.pa}</td>
-      <td class="td-stat td-highlight">${p.xwoba.toFixed(3)}</td>
-      <td class="td-stat">${p.avg.toFixed(3)}</td>
-      <td class="td-stat" style="color:var(--accent2)">${p.k.toFixed(1)}%</td>
-      <td class="td-stat" style="color:var(--muted)">${p.whiff.toFixed(1)}%</td>
-      <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div></td>
-    `;
-    tbody.appendChild(tr);
-  });
+    const tbody = document.getElementById('count-lb-body');
+    tbody.innerHTML = '';
+
+    if (!data || data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">No data available</td></tr>';
+      return;
+    }
+
+    const maxX = Math.max(...data.map(p=>p.xwoba || 0.3), 0.001);
+    data.forEach((p,i) => {
+      const pct = ((p.xwoba || 0.3)/maxX*100).toFixed(0);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="td-rank">${i+1}</td>
+        <td class="td-name">${p.name || p.batter_name || '—'}</td>
+        <td class="td-stat" style="color:var(--muted)">${p.pa || 0}</td>
+        <td class="td-stat td-highlight">${(p.xwoba || 0.3).toFixed(3)}</td>
+        <td class="td-stat">${(p.avg || 0.25).toFixed(3)}</td>
+        <td class="td-stat" style="color:var(--accent2)">${((p.k_pct || 0.2) * 100).toFixed(1)}%</td>
+        <td class="td-stat" style="color:var(--muted)">${(p.whiff_pct || 0.22).toFixed(1)}%</td>
+        <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    console.error('Failed to fetch batter leaderboard:', err);
+    const tbody = document.getElementById('count-lb-body');
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Error loading leaderboard</td></tr>';
+  }
 }
 
 document.getElementById('count-outs').addEventListener('click', e => {
@@ -1172,6 +1190,17 @@ document.getElementById('count-lb-pills').addEventListener('click', e => {
   pill.classList.add('active');
   state.count.sort = pill.dataset.s;
   renderCountLeaderboard();
+});
+
+// Leaderboard filter listeners
+['lb-limit', 'lb-season', 'lb-min-pa'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('change', () => renderCountLeaderboard());
+    el.addEventListener('keyup', (e) => {
+      if (e.key === 'Enter') renderCountLeaderboard();
+    });
+  }
 });
 
 // ══════════════════════════════════════
