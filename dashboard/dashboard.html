@@ -190,6 +190,11 @@
   </nav>
 
   <main class="main">
+    <!-- Error Banner -->
+    <div id="api-error-banner" style="display:none;background:#8B0000;color:#FFF;padding:16px;border-radius:4px;margin-bottom:20px;font-family:var(--mono);font-size:13px">
+      <div style="font-weight:bold;margin-bottom:8px">⚠️ API Connection Error</div>
+      <div id="api-error-message"></div>
+    </div>
 
     <!-- ══════════ COUNT STATE ══════════ -->
     <div id="page-count" class="page-section active">
@@ -663,9 +668,19 @@
 // ══════════════════════════════════════
 const state = {
   count:       { balls:null, strikes:null, outs:null, sort:'xwoba', batter_hand:'all', pitcher_hand:'all' },
-  batter:      { selected:'F. Freeman', window:'season', balls:0, strikes:0 },
-  pitcher:     { selected:'C. Burnes',  window:'season', balls:0, strikes:0 },
-  leaderboard: { type:'batting', window:'season', balls:null, strikes:null, outs:0, sort:'xwoba' },
+  batter:      { selected:null, window:'season', balls:0, strikes:0 },
+  pitcher:     { selected:null, window:'season', balls:0, strikes:0 },
+  leaderboard: {
+    type:'batting',
+    window:'season',
+    balls:null,
+    strikes:null,
+    outs:0,
+    sort:'xwoba',
+    limit: 10,
+    season: 2026,
+    minPa: 50,
+  },
   sequence:    { pitches:[], playerType:'batter', selectedPlayer:'' },
   season:      2026,
   page: 'count',
@@ -676,27 +691,40 @@ const state = {
 // ══════════════════════════════════════
 const API_BASE = 'http://localhost:8000/api';
 let countData = {};
+let countInstances = {};
+let batterLeaderboard = [];
+let batterProfiles = {};
+let pitcherProfiles = {};
 let loading = { countData: false };
 
-// Fallback data in case API is unavailable
-const DEFAULT_COUNT_DATA = {
-  '0-0':{ k:5,  xwoba:.330, whiff:14.2, bb:8.1  },
-  '1-0':{ k:7,  xwoba:.345, whiff:16.1, bb:12.3 },
-  '2-0':{ k:4,  xwoba:.380, whiff:11.8, bb:18.5 },
-  '3-0':{ k:1,  xwoba:.420, whiff:5.2,  bb:32.1 },
-  '0-1':{ k:12, xwoba:.290, whiff:22.4, bb:3.2  },
-  '1-1':{ k:14, xwoba:.305, whiff:24.1, bb:6.8  },
-  '2-1':{ k:9,  xwoba:.350, whiff:18.3, bb:11.2 },
-  '3-1':{ k:5,  xwoba:.400, whiff:12.1, bb:25.4 },
-  '0-2':{ k:32, xwoba:.220, whiff:38.4, bb:0    },
-  '1-2':{ k:28, xwoba:.240, whiff:35.2, bb:1.1  },
-  '2-2':{ k:34, xwoba:.260, whiff:40.1, bb:2.8  },
-  '3-2':{ k:26, xwoba:.310, whiff:31.8, bb:14.2 },
-};
+// API error state
+let apiErrors = {};
 
-(() => {
-  countData = { ...DEFAULT_COUNT_DATA };
-})();
+function showApiError(source, message) {
+  apiErrors[source] = message;
+  const banner = document.getElementById('api-error-banner');
+  const errorMsg = document.getElementById('api-error-message');
+
+  const errors = Object.entries(apiErrors)
+    .map(([src, msg]) => `<div>• ${src}: ${msg}</div>`)
+    .join('');
+
+  errorMsg.innerHTML = errors;
+  banner.style.display = errors ? 'block' : 'none';
+}
+
+function clearApiError(source) {
+  delete apiErrors[source];
+  const banner = document.getElementById('api-error-banner');
+  const errorMsg = document.getElementById('api-error-message');
+
+  const errors = Object.entries(apiErrors)
+    .map(([src, msg]) => `<div>• ${src}: ${msg}</div>`)
+    .join('');
+
+  errorMsg.innerHTML = errors;
+  banner.style.display = errors ? 'block' : 'none';
+}
 
 // ══════════════════════════════════════
 // API FETCHING
@@ -710,73 +738,119 @@ async function fetchCountOutcomeMatrix(season = 2026) {
     const data = await response.json();
 
     // Transform API response to countData format
-    // API returns array of objects, we need to convert to our format
-    const newCountData = { ...DEFAULT_COUNT_DATA };
+    const newCountData = {};
     data.forEach(row => {
       if (row.balls !== null && row.strikes !== null) {
         const key = `${row.balls}-${row.strikes}`;
         newCountData[key] = {
-          k: row.k_rate || row.k || newCountData[key]?.k,
-          xwoba: row.xwoba || newCountData[key]?.xwoba,
-          whiff: row.whiff_percent || row.whiff || newCountData[key]?.whiff,
-          bb: row.walk_rate || row.bb || newCountData[key]?.bb,
+          k: row.k_rate || row.k || 15,
+          xwoba: row.xwoba || 0.320,
+          whiff: row.whiff_percent || row.whiff || 20,
+          bb: row.walk_rate || row.bb || 8,
         };
       }
     });
 
+    if (Object.keys(newCountData).length === 0) {
+      throw new Error('No data received from API');
+    }
+
     countData = newCountData;
+    clearApiError('count-data');
     console.log('✓ Loaded count outcome matrix from API');
   } catch (error) {
-    console.warn('⚠ Failed to fetch count matrix, using fallback data:', error.message);
-    countData = { ...DEFAULT_COUNT_DATA };
+    const msg = `Failed to fetch count data: ${error.message}`;
+    showApiError('count-data', msg);
+    console.warn('⚠', msg);
+    countData = {};
   } finally {
     loading.countData = false;
   }
 }
 
-async function fetchLeaderboardBatting(season = 2026, window = 'season') {
+async function fetchBatterLeaderboard(limit = 10, season = 2026, minPa = 50) {
   try {
-    // Fetch from the stuff leaderboard endpoint (baseball-specific)
-    const response = await fetch(`${API_BASE}/leaderboard/stuff?season=${season}&min_pitches=1`);
+    const response = await fetch(`${API_BASE}/count-state/batter-splits?balls=0&strikes=0&season=${season}&min_pa=${minPa}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    console.log('✓ Loaded batting leaderboard from API');
-    return data;
+    const results = (data.results || []).slice(0, limit);
+    console.log(`✓ Loaded ${results.length} batters from API`);
+    clearApiError('batter-leaderboard');
+    return results;
   } catch (error) {
-    console.warn('⚠ Failed to fetch batting leaderboard:', error.message);
-    return lbBatting[window] || lbBatting.season;
+    const msg = `Failed to fetch batter leaderboard: ${error.message}`;
+    showApiError('batter-leaderboard', msg);
+    console.warn('⚠', msg);
+    return [];
   }
 }
 
-async function fetchBatterProfile(batterId, season = 2026) {
+async function fetchPitcherLeaderboard(limit = 10, season = 2026) {
   try {
-    const response = await fetch(`${API_BASE}/batter/${batterId}/splits?season=${season}`);
+    const response = await fetch(`${API_BASE}/leaderboard/stuff?season=${season}&min_pitches=100&limit=${limit}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    console.log(`✓ Loaded batter profile ${batterId} from API`);
+    console.log(`✓ Loaded ${data.length} pitchers from API`);
+    clearApiError('pitcher-leaderboard');
     return data;
   } catch (error) {
-    console.warn(`⚠ Failed to fetch batter ${batterId}:`, error.message);
+    const msg = `Failed to fetch pitcher leaderboard: ${error.message}`;
+    showApiError('pitcher-leaderboard', msg);
+    console.warn('⚠', msg);
+    return [];
+  }
+}
+
+async function fetchBatterProfile(batter) {
+  try {
+    const response = await fetch(`${API_BASE}/batter/${batter.id || batter.name}/splits?season=${state.season}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    console.log(`✓ Loaded batter profile ${batter.name} from API`);
+    clearApiError(`batter-profile-${batter.name}`);
+    batterProfiles[batter.name] = data;
+    return data;
+  } catch (error) {
+    const msg = `Failed to fetch batter ${batter.name}: ${error.message}`;
+    showApiError(`batter-profile-${batter.name}`, msg);
+    console.warn('⚠', msg);
     return null;
   }
 }
 
-async function fetchPitcherProfile(pitcherId, season = 2026) {
+async function fetchPitcherProfile(pitcher) {
   try {
-    const response = await fetch(`${API_BASE}/pitcher/${pitcherId}/count-profile?season=${season}`);
+    const response = await fetch(`${API_BASE}/pitcher/${pitcher.id || pitcher.name}/count-profile?season=${state.season}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    console.log(`✓ Loaded pitcher profile ${pitcherId} from API`);
+    console.log(`✓ Loaded pitcher profile ${pitcher.name} from API`);
+    clearApiError(`pitcher-profile-${pitcher.name}`);
+    pitcherProfiles[pitcher.name] = data;
     return data;
   } catch (error) {
-    console.warn(`⚠ Failed to fetch pitcher ${pitcherId}:`, error.message);
+    const msg = `Failed to fetch pitcher ${pitcher.name}: ${error.message}`;
+    showApiError(`pitcher-profile-${pitcher.name}`, msg);
+    console.warn('⚠', msg);
     return null;
   }
 }
 
 async function initializeData() {
   console.log('Initializing dashboard data from API...');
+
+  // Fetch core count data
   await fetchCountOutcomeMatrix(state.season);
+
+  // Fetch leaderboards
+  batterLeaderboard = await fetchBatterLeaderboard(state.leaderboard.limit, state.leaderboard.season, state.leaderboard.minPa);
+
+  if (batterLeaderboard.length > 0) {
+    state.batter.selected = batterLeaderboard[0].name || null;
+    if (state.batter.selected) {
+      await fetchBatterProfile(batterLeaderboard[0]);
+    }
+  }
+
   console.log('Dashboard ready');
 }
 
@@ -787,29 +861,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderCountPage();
 });
 
-const countZones = {
-  '0-0':[[10,16,9],[18,26,20],[12,17,10]], '1-0':[[11,17,10],[19,28,22],[13,18,11]],
-  '2-0':[[12,19,11],[22,30,24],[14,20,12]], '3-0':[[8,12,7],[14,20,15],[9,13,8]],
-  '0-1':[[9,15,8],[17,24,18],[11,16,9]],  '1-1':[[10,16,9],[18,25,19],[12,17,10]],
-  '2-1':[[11,18,10],[20,28,22],[13,19,11]],'3-1':[[10,17,9],[19,27,21],[12,18,10]],
-  '0-2':[[8,13,7],[15,22,16],[10,14,8]],  '1-2':[[9,14,8],[16,23,17],[10,15,9]],
-  '2-2':[[10,15,9],[17,24,18],[11,16,10]],'3-2':[[12,18,11],[20,28,22],[13,19,12]],
-};
-
-const countInstances = {
-  '0-0':{all:45230, L_vs_L:8940, L_vs_R:12340, R_vs_L:11220, R_vs_R:12730},
-  '1-0':{all:32100, L_vs_L:6200, L_vs_R:8900, R_vs_L:7800, R_vs_R:9200},
-  '2-0':{all:18900, L_vs_L:3600, L_vs_R:5200, R_vs_L:4700, R_vs_R:5400},
-  '3-0':{all:4200, L_vs_L:800, L_vs_R:1100, R_vs_L:1000, R_vs_R:1300},
-  '0-1':{all:38900, L_vs_L:7500, L_vs_R:10600, R_vs_L:9800, R_vs_R:11000},
-  '1-1':{all:42100, L_vs_L:8100, L_vs_R:11500, R_vs_L:10600, R_vs_R:11900},
-  '2-1':{all:28400, L_vs_L:5400, L_vs_R:7800, R_vs_L:7200, R_vs_R:8000},
-  '3-1':{all:8900, L_vs_L:1700, L_vs_R:2400, R_vs_L:2200, R_vs_R:2600},
-  '0-2':{all:32200, L_vs_L:6200, L_vs_R:8800, R_vs_L:8100, R_vs_R:9100},
-  '1-2':{all:28400, L_vs_L:5500, L_vs_R:7700, R_vs_L:7100, R_vs_R:8100},
-  '2-2':{all:18900, L_vs_L:3600, L_vs_R:5200, R_vs_L:4700, R_vs_R:5400},
-  '3-2':{all:12300, L_vs_L:2400, L_vs_R:3300, R_vs_L:3000, R_vs_R:3600},
-};
+// Count by zones and instances are fetched from API
+// See fetchCountOutcomeMatrix() and fetchCountInstances()
 
 function getCountInstances() {
   const { balls, strikes, outs, batter_hand, pitcher_hand } = state.count;
@@ -819,8 +872,9 @@ function getCountInstances() {
     // All counts
     Object.keys(countInstances).forEach(key => {
       const inst = countInstances[key];
+      if (!inst) return;
       const key2 = `${batter_hand === 'all' ? 'all' : batter_hand}_vs_${pitcher_hand === 'all' ? 'all' : pitcher_hand}`;
-      const val = inst[key2] || inst.all;
+      const val = inst[key2] || inst.all || 0;
       if (outs === null) {
         total += val;
       } else {
@@ -833,7 +887,7 @@ function getCountInstances() {
     const inst = countInstances[key];
     if (inst) {
       const key2 = `${batter_hand === 'all' ? 'all' : batter_hand}_vs_${pitcher_hand === 'all' ? 'all' : pitcher_hand}`;
-      const val = inst[key2] || inst.all;
+      const val = inst[key2] || inst.all || 0;
       if (outs === null) {
         total = val;
       } else {
@@ -1137,22 +1191,24 @@ async function renderCountLeaderboard() {
   const limit = document.getElementById('lb-limit').value || 10;
   const season = document.getElementById('lb-season').value || 2024;
   const minPa = document.getElementById('lb-min-pa').value || 50;
+  const tbody = document.getElementById('count-lb-body');
 
   try {
-    const response = await fetch(`${API_BASE}/api/leaderboard/batting?season=${season}&limit=${limit}&min_pa=${minPa}`);
+    const response = await fetch(`${API_BASE}/count-state/batter-splits?balls=${balls || 0}&strikes=${strikes || 0}&season=${season}&min_pa=${minPa}&limit=${limit}`);
     if (!response.ok) throw new Error(`API error: ${response.status}`);
     const data = await response.json();
 
-    const tbody = document.getElementById('count-lb-body');
     tbody.innerHTML = '';
 
-    if (!data || data.length === 0) {
+    const results = (data.results || data || []).slice(0, limit);
+    if (!results || results.length === 0) {
       tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">No data available</td></tr>';
+      clearApiError('count-leaderboard');
       return;
     }
 
-    const maxX = Math.max(...data.map(p=>p.xwoba || 0.3), 0.001);
-    data.forEach((p,i) => {
+    const maxX = Math.max(...results.map(p=>p.xwoba || 0.3), 0.001);
+    results.forEach((p,i) => {
       const pct = ((p.xwoba || 0.3)/maxX*100).toFixed(0);
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -1167,10 +1223,12 @@ async function renderCountLeaderboard() {
       `;
       tbody.appendChild(tr);
     });
+    clearApiError('count-leaderboard');
   } catch (err) {
-    console.error('Failed to fetch batter leaderboard:', err);
-    const tbody = document.getElementById('count-lb-body');
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Error loading leaderboard</td></tr>';
+    const msg = `Failed to fetch batter leaderboard: ${err.message}`;
+    showApiError('count-leaderboard', msg);
+    console.error(msg);
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--accent2);padding:20px">⚠ Error loading leaderboard — check API connection</td></tr>';
   }
 }
 
