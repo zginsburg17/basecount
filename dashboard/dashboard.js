@@ -154,19 +154,37 @@ function populatePlayerLists() {
   const batterList = document.getElementById("batter-list");
   const pitcherList = document.getElementById("pitcher-list");
   const seqList = document.getElementById("seq-player-list");
-  batterList.innerHTML = state.players.batters.map((player) => `<option value="${player.name}"></option>`).join("");
-  pitcherList.innerHTML = state.players.pitchers.map((player) => `<option value="${player.name}"></option>`).join("");
-  seqList.innerHTML = state.players.pitchers.map((player) => `<option value="${player.name}"></option>`).join("");
+  batterList.innerHTML = state.players.batters.map((player) => `<option value="${playerOptionLabel(player)}"></option>`).join("");
+  pitcherList.innerHTML = state.players.pitchers.map((player) => `<option value="${playerOptionLabel(player)}"></option>`).join("");
+  seqList.innerHTML = state.players.pitchers.map((player) => `<option value="${playerOptionLabel(player)}"></option>`).join("");
+}
+
+function playerOptionLabel(player) {
+  return player?.team ? `${player.name} · ${player.team}` : player?.name || "";
 }
 
 function lookupPlayerByName(role, name) {
   const players = role === "batter" ? state.players.batters : state.players.pitchers;
-  return players.find((player) => player.name === name) || null;
+  return players.find((player) => {
+    const optionLabel = playerOptionLabel(player);
+    return player.name === name || optionLabel === name;
+  }) || null;
+}
+
+function lookupPlayerById(role, id) {
+  const players = role === "batter" ? state.players.batters : state.players.pitchers;
+  return players.find((player) => player.id === id) || null;
 }
 
 function playerName(role, id) {
-  const players = role === "batter" ? state.players.batters : state.players.pitchers;
-  return players.find((player) => player.id === id)?.name || `${role === "batter" ? "Batter" : "Pitcher"} #${id}`;
+  return lookupPlayerById(role, id)?.name || `${role === "batter" ? "Batter" : "Pitcher"} #${id}`;
+}
+
+function playerLabel(role, id, fallbackName = null) {
+  const player = lookupPlayerById(role, id);
+  const name = player?.name || fallbackName || playerName(role, id);
+  const team = player?.team;
+  return team ? `${name} · ${team}` : name;
 }
 
 function selectedSeason() {
@@ -218,30 +236,52 @@ function syncScopeControls() {
 
 async function loadMetaContext() {
   const context = await apiFetch("/meta/context", "context");
+  const hadScope = state.scope.season !== null || state.scope.seasonStart !== null || state.scope.seasonEnd !== null;
+  const previousBatterId = state.batter.selectedId;
+  const previousPitcherId = state.pitcher.selectedId;
+  const previousSequenceId = state.sequence.selectedId;
   state.season = context.latest_season;
   state.latestGameDate = context.latest_game_date;
   state.earliestSeason = context.earliest_season;
   state.players.batters = context.batters || [];
   state.players.pitchers = context.pitchers || [];
-  state.leaderboard.season = context.latest_season;
-  state.scope.season = context.latest_season;
-  state.scope.seasonStart = context.earliest_season;
-  state.scope.seasonEnd = context.latest_season;
-  document.getElementById("lb-season").value = context.latest_season;
-  document.getElementById("lb-season-start").value = context.earliest_season;
-  document.getElementById("lb-season-end").value = context.latest_season;
+  if (!hadScope) {
+    state.scope.mode = context.earliest_season !== context.latest_season ? "range" : "single";
+    state.scope.season = context.latest_season;
+    state.scope.seasonStart = context.earliest_season;
+    state.scope.seasonEnd = context.latest_season;
+  }
+
+  const seasonInputs = ["lb-season", "lb-season-start", "lb-season-end"];
+  seasonInputs.forEach((id) => {
+    const input = document.getElementById(id);
+    input.min = context.earliest_season || 2015;
+    input.max = context.latest_season || new Date().getFullYear();
+  });
+
+  document.getElementById("scope-mode").value = state.scope.mode;
+  document.getElementById("lb-season").value = state.scope.season || context.latest_season;
+  document.getElementById("lb-season-start").value = state.scope.seasonStart || context.earliest_season;
+  document.getElementById("lb-season-end").value = state.scope.seasonEnd || context.latest_season;
   populatePlayerLists();
   syncScopeControls();
 
-  if (state.players.batters.length > 0) {
-    state.batter.selectedId = state.players.batters[0].id;
-    document.getElementById("batter-select").value = state.players.batters[0].name;
+  const activeBatter = lookupPlayerById("batter", previousBatterId) || state.players.batters[0] || null;
+  if (activeBatter) {
+    state.batter.selectedId = activeBatter.id;
+    document.getElementById("batter-select").value = playerOptionLabel(activeBatter);
   }
-  if (state.players.pitchers.length > 0) {
-    state.pitcher.selectedId = state.players.pitchers[0].id;
-    state.sequence.selectedId = state.players.pitchers[0].id;
-    document.getElementById("pitcher-select").value = state.players.pitchers[0].name;
-    document.getElementById("seq-player-search").value = state.players.pitchers[0].name;
+
+  const activePitcher = lookupPlayerById("pitcher", previousPitcherId) || state.players.pitchers[0] || null;
+  if (activePitcher) {
+    state.pitcher.selectedId = activePitcher.id;
+    document.getElementById("pitcher-select").value = playerOptionLabel(activePitcher);
+  }
+
+  const activeSequencePitcher = lookupPlayerById("pitcher", previousSequenceId) || activePitcher;
+  if (activeSequencePitcher) {
+    state.sequence.selectedId = activeSequencePitcher.id;
+    document.getElementById("seq-player-search").value = playerOptionLabel(activeSequencePitcher);
   }
 }
 
@@ -414,7 +454,7 @@ async function renderCountPage() {
   document.getElementById("count-lb-body").innerHTML = sorted.map((row, index) => `
     <tr>
       <td class="td-rank">${index + 1}</td>
-      <td class="td-name">${row.batter_name || row.name}</td>
+      <td class="td-name">${playerLabel("batter", row.batter_id, row.batter_name || row.name)}</td>
       <td class="td-stat" style="color:var(--muted)">${fmtNum(row.pa, 0)}</td>
       <td class="td-stat td-highlight">${fmtRate(row.xwoba)}</td>
       <td class="td-stat">${fmtRate(row.avg)}</td>
@@ -460,7 +500,7 @@ async function renderBatterProfile() {
     <div class="stat-card">
       <div class="stat-label">Home Runs</div>
       <div class="stat-value">${fmtNum(profile.summary.hr, 0)}</div>
-      <div class="stat-delta">${playerName("batter", state.batter.selectedId)}</div>
+      <div class="stat-delta">${playerLabel("batter", state.batter.selectedId)}</div>
     </div>
   `;
 
@@ -520,7 +560,7 @@ async function renderPitcherProfile() {
     <div class="stat-card">
       <div class="stat-label">Pitches</div>
       <div class="stat-value" style="color:var(--accent)">${fmtNum(profile.summary.pitches, 0)}</div>
-      <div class="stat-delta">${playerName("pitcher", state.pitcher.selectedId)}</div>
+      <div class="stat-delta">${playerLabel("pitcher", state.pitcher.selectedId)}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Avg Velo</div>
@@ -579,6 +619,7 @@ async function renderLeaderboard() {
   const isBatting = state.leaderboard.type === "batting";
   const sortField = state.leaderboard.sort;
   const seasonQuery = activeSeasonQuery(state.leaderboard.window);
+  buildCountGrid("lb-count-grid", state.leaderboard, renderLeaderboard);
 
   let rows;
   if (isBatting) {
@@ -596,7 +637,7 @@ async function renderLeaderboard() {
     document.getElementById("lb-body").innerHTML = rows.map((row, index) => `
       <tr>
         <td class="td-rank">${index + 1}</td>
-        <td class="td-name">${row.batter_name}</td>
+        <td class="td-name">${playerLabel("batter", row.batter_id, row.batter_name)}</td>
         <td class="td-stat">${fmtNum(row.pa, 0)}</td>
         <td class="td-stat td-highlight">${fmtRate(row.xwoba)}</td>
         <td class="td-stat">${fmtRate(row.avg)}</td>
@@ -617,7 +658,7 @@ async function renderLeaderboard() {
     document.getElementById("lb-body").innerHTML = rows.map((row, index) => `
       <tr>
         <td class="td-rank">${index + 1}</td>
-        <td class="td-name">${row.pitcher_name}</td>
+        <td class="td-name">${playerLabel("pitcher", row.pitcher_id, row.pitcher_name)}</td>
         <td class="td-stat">${row.pitch_type}</td>
         <td class="td-stat td-highlight">${fmtPct(row.whiff_pct, 1)}</td>
         <td class="td-stat">${fmtPct(row.csw_pct, 1)}</td>
@@ -685,7 +726,7 @@ async function renderSequencePage() {
   document.getElementById("sequence-player-stats").innerHTML = `
     <div class="stat-card">
       <div class="stat-label">Pitcher</div>
-      <div class="stat-value sm" style="color:var(--accent)">${playerName("pitcher", state.sequence.selectedId)}</div>
+      <div class="stat-value sm" style="color:var(--accent)">${playerLabel("pitcher", state.sequence.selectedId)}</div>
       <div class="stat-delta">${fmtNum(playerRows.length, 0)} tracked sequences</div>
     </div>
     <div class="stat-card">
@@ -883,6 +924,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       state.leaderboard.limit = Number(document.getElementById("lb-limit").value) || 10;
       state.leaderboard.season = selectedSeason();
       state.leaderboard.minPa = Number(document.getElementById("lb-min-pa").value) || 25;
+      state.scope.season = selectedSeason();
+      state.scope.seasonStart = selectedSeasonStart();
+      state.scope.seasonEnd = selectedSeasonEnd();
       syncScopeControls();
       refreshData();
     });

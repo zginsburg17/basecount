@@ -40,6 +40,7 @@ HIT_EVENTS = ("single", "double", "triple", "home_run")
 WALK_EVENTS = ("walk", "intent_walk")
 STRIKEOUT_EVENTS = ("strikeout", "strikeout_double_play")
 AB_EXCLUDED_EVENTS = ("walk", "intent_walk", "hit_by_pitch", "sac_fly", "sac_bunt", "catcher_interf")
+PLAYER_NAME_CACHE: dict[int, Optional[str]] = {}
 
 
 def get_con():
@@ -212,6 +213,61 @@ def player_name_expr(prefix: str, id_col: str) -> str:
     return f"COALESCE(pl.full_name, '{prefix} #' || CAST({id_col} AS VARCHAR))"
 
 
+def team_expr(prefix: str, id_col: str, team_col: str) -> str:
+    return f"""
+        COALESCE(
+            pl.team,
+            (
+                SELECT {team_col}
+                FROM pitches px
+                WHERE px.{id_col} = {prefix}.{id_col}
+                  AND {team_col} IS NOT NULL
+                ORDER BY px.game_date DESC
+                LIMIT 1
+            )
+        )
+    """
+
+
+def lookup_player_names(player_ids: list[int]) -> dict[int, str]:
+    missing_ids = [pid for pid in player_ids if pid not in PLAYER_NAME_CACHE]
+    if not missing_ids:
+        return {pid: PLAYER_NAME_CACHE[pid] for pid in player_ids if PLAYER_NAME_CACHE.get(pid)}
+
+    try:
+        from pybaseball import playerid_reverse_lookup
+
+        lookup_df = playerid_reverse_lookup(missing_ids, key_type="mlbam")
+        if lookup_df is not None and not lookup_df.empty:
+            for _, row in lookup_df.iterrows():
+                pid = int(row["key_mlbam"])
+                PLAYER_NAME_CACHE[pid] = f"{row['name_first'].strip().title()} {row['name_last'].strip().title()}"
+    except Exception:
+        pass
+
+    for pid in missing_ids:
+        PLAYER_NAME_CACHE.setdefault(pid, None)
+
+    return {pid: PLAYER_NAME_CACHE[pid] for pid in player_ids if PLAYER_NAME_CACHE.get(pid)}
+
+
+def inject_player_names(records: list[dict], *, id_key: str, name_key: str) -> list[dict]:
+    missing_ids = [
+        int(record[id_key])
+        for record in records
+        if record.get(id_key) is not None and str(record.get(name_key, "")).endswith(f"#{record[id_key]}")
+    ]
+    if not missing_ids:
+        return records
+
+    resolved = lookup_player_names(missing_ids)
+    for record in records:
+        pid = record.get(id_key)
+        if pid in resolved:
+            record[name_key] = resolved[pid]
+    return records
+
+
 def zone_matrix_from_rows(rows: list[tuple[int, int]]) -> list[list[int]]:
     counts = {zone: count for zone, count in rows if zone is not None}
     return [
@@ -288,8 +344,6 @@ def pitcher_summary_query(where_sql: str) -> str:
 def api_meta_context():
     con = get_con()
     context = latest_data_context(con)
-    latest_season = context["latest_season"]
-
     batter_name = player_name_expr("Batter", "ab.batter_id")
     pitcher_name = player_name_expr("Pitcher", "p.pitcher_id")
 
@@ -298,15 +352,14 @@ def api_meta_context():
         SELECT
             ab.batter_id AS id,
             {batter_name} AS name,
+            {team_expr('ab', 'batter_id', 'batter_team')} AS team,
             COUNT(*) AS pa
         FROM at_bats ab
         LEFT JOIN players pl ON pl.player_id = ab.batter_id
-        WHERE ab.season = ?
-        GROUP BY ab.batter_id, {batter_name}
+        GROUP BY ab.batter_id, {batter_name}, {team_expr('ab', 'batter_id', 'batter_team')}
         ORDER BY pa DESC, name
-        LIMIT 30
-        """,
-        [latest_season],
+        LIMIT 200
+        """
     ).df()
 
     pitchers = con.execute(
@@ -314,21 +367,23 @@ def api_meta_context():
         SELECT
             p.pitcher_id AS id,
             {pitcher_name} AS name,
+            {team_expr('p', 'pitcher_id', 'pitcher_team')} AS team,
             COUNT(*) AS pitches
         FROM pitches p
         LEFT JOIN players pl ON pl.player_id = p.pitcher_id
-        WHERE p.season = ?
-        GROUP BY p.pitcher_id, {pitcher_name}
+        GROUP BY p.pitcher_id, {pitcher_name}, {team_expr('p', 'pitcher_id', 'pitcher_team')}
         ORDER BY pitches DESC, name
-        LIMIT 30
-        """,
-        [latest_season],
+        LIMIT 200
+        """
     ).df()
+
+    batter_records = inject_player_names(df_to_json(batters), id_key="id", name_key="name")
+    pitcher_records = inject_player_names(df_to_json(pitchers), id_key="id", name_key="name")
 
     return {
         **context,
-        "batters": df_to_json(batters),
-        "pitchers": df_to_json(pitchers),
+        "batters": batter_records,
+        "pitchers": pitcher_records,
     }
 
 
@@ -365,7 +420,8 @@ def api_count_state_splits(
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
     )
-    return {"count": f"{balls}-{strikes}", "results": df_to_json(df)}
+    records = inject_player_names(df_to_json(df), id_key="batter_id", name_key="batter_name")
+    return {"count": f"{balls}-{strikes}", "results": records}
 
 
 @app.get("/api/count-state/outcome-matrix")
@@ -791,7 +847,7 @@ def api_batting_leaderboard(
             and outs is None and stand is None and p_throws is None
         ):
             df = batting_leaderboard(con, resolved["season"], limit, min_pa)
-            return df_to_json(df)
+            return inject_player_names(df_to_json(df), id_key="batter_id", name_key="batter_name")
 
         where_sql = build_filters(
             "ab",
@@ -824,7 +880,7 @@ def api_batting_leaderboard(
             LIMIT {limit}
             """
         ).df()
-        return df_to_json(df)
+        return inject_player_names(df_to_json(df), id_key="batter_id", name_key="batter_name")
 
     pitch_where = build_filters(
         "p",
@@ -867,7 +923,7 @@ def api_batting_leaderboard(
         LIMIT {limit}
         """
     ).df()
-    return df_to_json(df)
+    return inject_player_names(df_to_json(df), id_key="batter_id", name_key="batter_name")
 
 
 @app.get("/api/leaderboard/stuff")
@@ -886,7 +942,7 @@ def api_stuff_leaderboard(
 
     if window == "season" and resolved["season"] is not None and resolved["season_start"] == resolved["season_end"]:
         df = stuff_plus_proxy(con, resolved["season"], pitch_type, min_pitches).head(limit)
-        return df_to_json(df)
+        return inject_player_names(df_to_json(df), id_key="pitcher_id", name_key="pitcher_name")
 
     where_sql = build_filters(
         "p",
@@ -920,7 +976,7 @@ def api_stuff_leaderboard(
         LIMIT {limit}
         """
     ).df()
-    return df_to_json(df)
+    return inject_player_names(df_to_json(df), id_key="pitcher_id", name_key="pitcher_name")
 
 
 # ---------------------------------------------------------------------------
