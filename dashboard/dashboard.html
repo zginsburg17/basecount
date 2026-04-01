@@ -168,14 +168,6 @@
     <div class="topbar-right">
       <div class="live-dot"></div>
       <button onclick="refreshData()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:2px;cursor:pointer;font-family:var(--mono);font-size:11px;transition:all 0.2s" title="Refresh API data">↻ Refresh</button>
-      <div class="ctrl-group" style="gap:6px;margin:0">
-        <div class="ctrl-label" style="margin-bottom:0;font-size:9px">Season</div>
-        <select class="player-select" id="season-select" onchange="onSeasonChange()" style="min-width:100px;padding:5px 10px;height:32px">
-          <option value="2024">2024</option>
-          <option value="2025">2025</option>
-          <option value="2026">2026</option>
-        </select>
-      </div>
     </div>
   </header>
 
@@ -693,6 +685,7 @@ const API_BASE = 'http://localhost:8000/api';
 let countData = {};
 let countInstances = {};
 let batterLeaderboard = [];
+let pitcherLeaderboard = [];
 let batterProfiles = {};
 let pitcherProfiles = {};
 let loading = { countData: false };
@@ -842,7 +835,10 @@ async function initializeData() {
   await fetchCountOutcomeMatrix(state.season);
 
   // Fetch leaderboards
-  batterLeaderboard = await fetchBatterLeaderboard(state.leaderboard.limit, state.leaderboard.season, state.leaderboard.minPa);
+  [batterLeaderboard, pitcherLeaderboard] = await Promise.all([
+    fetchBatterLeaderboard(state.leaderboard.limit, state.leaderboard.season, state.leaderboard.minPa),
+    fetchPitcherLeaderboard(state.leaderboard.limit, state.leaderboard.season),
+  ]);
 
   if (batterLeaderboard.length > 0) {
     state.batter.selected = batterLeaderboard[0].name || null;
@@ -1391,7 +1387,7 @@ const lbCountState = { balls: -1, strikes: -1 };
 function renderLeaderboard() {
   const { type, window: win, balls, strikes, sort } = state.leaderboard;
   const isBatting = type === 'batting';
-  let data = isBatting ? [...lbBatting[win]] : [...lbPitching[win]];
+  let data = isBatting ? [...batterLeaderboard] : [...pitcherLeaderboard];
 
   if (isBatting && balls !== null) {
     const key = balls + '-' + strikes;
@@ -1530,7 +1526,7 @@ function onSeasonChange() {
 
 async function refreshData() {
   console.log('Refreshing data from API...');
-  await fetchCountOutcomeMatrix(state.season);
+  await initializeData();
   renderCountPage();
   if (state.page === 'batter') renderBatterProfile();
   if (state.page === 'pitcher') renderPitcherProfile();
