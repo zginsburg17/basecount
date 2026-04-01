@@ -167,7 +167,14 @@
     <div class="tagline">// Statcast Analytics Platform</div>
     <div class="topbar-right">
       <div class="live-dot"></div>
-      <div class="season-badge">2024 MLB</div>
+      <div class="ctrl-group" style="gap:6px;margin:0">
+        <div class="ctrl-label" style="margin-bottom:0;font-size:9px">Season</div>
+        <select class="player-select" id="season-select" onchange="onSeasonChange()" style="min-width:100px;padding:5px 10px;height:32px">
+          <option value="2024">2024</option>
+          <option value="2025">2025</option>
+          <option value="2026">2026</option>
+        </select>
+      </div>
     </div>
   </header>
 
@@ -177,6 +184,8 @@
     <div class="nav-item" onclick="setPage('batter',this)"><span class="nav-icon">◉</span> Batter Profile</div>
     <div class="nav-item" onclick="setPage('pitcher',this)"><span class="nav-icon">◎</span> Pitcher Profile</div>
     <div class="nav-item" onclick="setPage('leaderboard',this)"><span class="nav-icon">⊞</span> Leaderboard</div>
+    <div class="nav-item" onclick="setPage('pitch-sequence',this)"><span class="nav-icon">🔗</span> Pitch Sequence</div>
+    <div class="nav-item" onclick="setPage('glossary',this)"><span class="nav-icon">📖</span> Glossary</div>
   </nav>
 
   <main class="main">
@@ -271,13 +280,12 @@
       <div class="profile-controls">
         <div class="ctrl-group">
           <div class="ctrl-label">Select Batter</div>
-          <div class="select-wrap">
-            <select class="player-select" id="batter-select" onchange="renderBatterProfile()">
-              <option>F. Freeman</option><option>P. Goldschmidt</option><option>M. Olson</option>
-              <option>T. Turner</option><option>A. Judge</option><option>P. Alonso</option>
-              <option>K. Tucker</option><option>G. Stanton</option>
-            </select>
-          </div>
+          <input type="text" id="batter-select" class="player-select" placeholder="Start typing..." onchange="renderBatterProfile()" list="batter-list" style="background:var(--bg);color:var(--text)"/>
+          <datalist id="batter-list">
+            <option value="F. Freeman"></option><option value="P. Goldschmidt"></option><option value="M. Olson"></option>
+            <option value="T. Turner"></option><option value="A. Judge"></option><option value="P. Alonso"></option>
+            <option value="K. Tucker"></option><option value="G. Stanton"></option>
+          </datalist>
         </div>
         <div class="ctrl-group">
           <div class="ctrl-label">Time Window</div>
@@ -290,6 +298,14 @@
       </div>
 
       <div class="stat-row" id="batter-stat-cards"></div>
+
+      <div class="panel">
+        <div class="panel-title">Season-by-Season Summary</div>
+        <table class="data-table">
+          <thead id="batter-season-thead"></thead>
+          <tbody id="batter-season-body"></tbody>
+        </table>
+      </div>
 
       <div class="panel-row">
         <div class="panel">
@@ -327,13 +343,12 @@
       <div class="profile-controls">
         <div class="ctrl-group">
           <div class="ctrl-label">Select Pitcher</div>
-          <div class="select-wrap">
-            <select class="player-select" id="pitcher-select" onchange="renderPitcherProfile()">
-              <option>C. Burnes</option><option>S. Alcantara</option><option>Z. Wheeler</option>
-              <option>K. Gausman</option><option>G. Cole</option><option>M. Fried</option>
-              <option>L. Webb</option><option>P. Corbin</option>
-            </select>
-          </div>
+          <input type="text" id="pitcher-select" class="player-select" placeholder="Start typing..." onchange="renderPitcherProfile()" list="pitcher-list" style="background:var(--bg);color:var(--text)"/>
+          <datalist id="pitcher-list">
+            <option value="C. Burnes"></option><option value="S. Alcantara"></option><option value="Z. Wheeler"></option>
+            <option value="K. Gausman"></option><option value="G. Cole"></option><option value="M. Fried"></option>
+            <option value="L. Webb"></option><option value="P. Corbin"></option>
+          </datalist>
         </div>
         <div class="ctrl-group">
           <div class="ctrl-label">Time Window</div>
@@ -346,6 +361,14 @@
       </div>
 
       <div class="stat-row" id="pitcher-stat-cards"></div>
+
+      <div class="panel">
+        <div class="panel-title">Season-by-Season Summary</div>
+        <table class="data-table">
+          <thead id="pitcher-season-thead"></thead>
+          <tbody id="pitcher-season-body"></tbody>
+        </table>
+      </div>
 
       <div class="panel-row">
         <div class="panel">
@@ -404,7 +427,7 @@
           <div class="count-grid" id="lb-count-grid"></div>
         </div>
         <div>
-          <div class="selector-label">Outs</div>
+          <div class="selector-label">Outs <button class="window-tab" onclick="clearLBOuts()" style="float:right;padding:2px 8px;font-size:9px">Clear</button></div>
           <div class="outs-selector" id="lb-outs">
             <button class="out-btn active" data-outs="0">0</button>
             <button class="out-btn" data-outs="1">1</button>
@@ -432,6 +455,172 @@
       </div>
     </div><!-- /page-leaderboard -->
 
+    <!-- ══════════ PITCH SEQUENCE ══════════ -->
+    <div id="page-pitch-sequence" class="page-section">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Pitch <em>Sequence</em></div>
+          <div class="page-subtitle">// build a sequence and compare league averages to individual performers</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Build Sequence (max 25 pitches)</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+          <div id="sequence-builder" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <button class="window-tab" onclick="addSequencePitch('ball')" style="background:var(--bg);border-color:var(--accent3);color:var(--accent3)">+ Ball</button>
+          <button class="window-tab" onclick="addSequencePitch('strike')" style="background:var(--bg);border-color:var(--accent);color:var(--accent)">+ Strike</button>
+          <button class="window-tab" onclick="addSequencePitch('foul')" style="background:var(--bg);border-color:var(--accent2);color:var(--accent2)">+ Foul</button>
+          <button class="window-tab" onclick="clearSequence()" style="background:var(--bg);border-color:var(--muted);color:var(--muted)">Clear</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">League Average for Sequence <span class="panel-title-badge" id="seq-pitch-count">0</span></div>
+        <div class="stat-row" id="sequence-league-stats"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span>Player Comparison</span>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="seq-player-search" class="player-select" placeholder="Search player..." list="seq-player-list" style="background:var(--bg);color:var(--text);min-width:200px" onchange="updateSequencePlayer()"/>
+            <datalist id="seq-player-list">
+              <option value="F. Freeman"></option><option value="A. Judge"></option><option value="P. Goldschmidt"></option>
+              <option value="C. Burnes"></option><option value="S. Alcantara"></option><option value="Z. Wheeler"></option>
+            </datalist>
+            <select class="player-select" id="seq-type-toggle" onchange="toggleSequenceType()" style="min-width:120px">
+              <option value="batter">Batter</option>
+              <option value="pitcher">Pitcher</option>
+            </select>
+          </div>
+        </div>
+        <div class="stat-row" id="sequence-player-stats"></div>
+      </div>
+
+      <div class="panel-row">
+        <div class="panel">
+          <div class="panel-title">Top 10 — Sequence Outcome <span class="panel-title-badge">BEST</span></div>
+          <table class="data-table">
+            <thead id="seq-top-thead"></thead>
+            <tbody id="seq-top-body"></tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Bottom 10 — Sequence Outcome <span class="panel-title-badge">WORST</span></div>
+          <table class="data-table">
+            <thead id="seq-bottom-thead"></thead>
+            <tbody id="seq-bottom-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Pitch Mix by Position in Sequence</div>
+        <div id="sequence-pitch-mix" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px"></div>
+      </div>
+    </div><!-- /page-pitch-sequence -->
+
+    <!-- ══════════ GLOSSARY ══════════ -->
+    <div id="page-glossary" class="page-section">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Glossary</div>
+          <div class="page-subtitle">// understanding baseball statistics in context</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Offensive Statistics</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px">
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">AVG (Batting Average)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Hits divided by at-bats. Measures a batter's ability to make contact and get hits. League average is around .270.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">OBP (On-Base Percentage)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">(Hits + Walks + Hit-by-pitch) / (At-bats + Walks + Hit-by-pitch + Sacrifice flies). Measures how often a player reaches base. League average around .330.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">SLG (Slugging Percentage)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Total bases / at-bats. Measures power hitting (1B=1, 2B=2, 3B=3, HR=4). League average around .410.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">xwOBA (Expected Weighted On-Base Average)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">A Statcast metric that predicts a batter's actual average based on exit velocity and launch angle. More predictive than actual results.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">K% (Strikeout Rate)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Strikeouts divided by plate appearances. Higher is worse for batters. League average around 22%.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">BB% (Walk Rate)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Walks divided by plate appearances. Higher is better as it reaches base and doesn't make an out. League average around 8%.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">Whiff%</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Percentage of pitches swung at and missed. Shows susceptibility to poor pitches and swing-and-miss stuff.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">HR (Home Runs)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Number of four-base hits. Most valuable offensive output. Top hitters hit 40+ per season; league average batter ~20.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Pitching Statistics</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px">
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">ERA (Earned Run Average)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Earned runs allowed × 9 / innings pitched. Lower is better. Elite pitchers have ERAs under 3.00; league average ~4.00.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">FIP (Fielding Independent Pitching)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Estimates ERA based only on strikeouts, walks, HRs (not hits or fielding). More predictive than ERA. Lower is better.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">WHIP (Walks + Hits per Innings Pitched)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">(Walks + Hits) / Innings Pitched. Shows efficiency. Lower is better. Elite under 1.10; league average ~1.30.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">K/9 (Strikeouts per 9 innings)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Strikeout rate normalized to 9-inning game. Shows dominant strikeout stuff. Elite pitchers have K/9 over 10; average ~9.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">BB/9 (Walks per 9 innings)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Walk rate normalized to 9-inning game. Lower is better (more control). Elite under 2.0; average ~3.5.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">HR/9 (Home Runs per 9 innings)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Home run rate normalized to 9-inning game. Lower is better. Elite under 0.8; average ~1.0.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Advanced Concepts</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px">
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">Count State (Balls-Strikes)</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Pitcher-friendly counts (0-0, 0-1, 0-2, 1-2) favor strikeouts. Batter-friendly counts (2-0, 3-0, 3-1) favor hits and walks. 3-2 is the ultimate hitter's count with high walk rates.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">Pitch Sequencing</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">The strategy of throwing pitches in a specific order to set up hitters. Early strike calls increase later whiff rates. Fastballs after off-speed often miss further.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">Pitch Mix</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Distribution of pitch types thrown. Common types: Fastball (FF), Slider (SL), Curveball (CU), Changeup (CH), Sinker (SI). Better pitchers can vary mix by count.</div>
+          </div>
+          <div>
+            <div style="font-family:var(--display);font-size:16px;font-weight:700;color:var(--accent);margin-bottom:8px">Statcast Data</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.5">Pitch-by-pitch tracking from every MLB game. Includes exit velocity, launch angle, spin rate, and location. Enables predictive metrics like xwOBA.</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /page-glossary -->
+
   </main>
 </div>
 
@@ -444,6 +633,8 @@ const state = {
   batter:      { selected:'F. Freeman', window:'season', balls:0, strikes:0 },
   pitcher:     { selected:'C. Burnes',  window:'season', balls:0, strikes:0 },
   leaderboard: { type:'batting', window:'season', balls:null, strikes:null, outs:0, sort:'xwoba' },
+  sequence:    { pitches:[], playerType:'batter', selectedPlayer:'' },
+  season:      2026,
   page: 'count',
 };
 
@@ -452,16 +643,16 @@ const state = {
 // ══════════════════════════════════════
 const countData = {
   '0-0':{ k:5,  xwoba:.330, whiff:14.2, bb:8.1  },
-  '1-0':{ k:7,  xwoba:.345, whiff:16.1, bb:0    },
-  '2-0':{ k:4,  xwoba:.380, whiff:11.8, bb:0    },
-  '3-0':{ k:1,  xwoba:.420, whiff:5.2,  bb:0    },
-  '0-1':{ k:12, xwoba:.290, whiff:22.4, bb:0    },
-  '1-1':{ k:14, xwoba:.305, whiff:24.1, bb:0    },
-  '2-1':{ k:9,  xwoba:.350, whiff:18.3, bb:0    },
-  '3-1':{ k:5,  xwoba:.400, whiff:12.1, bb:0    },
+  '1-0':{ k:7,  xwoba:.345, whiff:16.1, bb:12.3 },
+  '2-0':{ k:4,  xwoba:.380, whiff:11.8, bb:18.5 },
+  '3-0':{ k:1,  xwoba:.420, whiff:5.2,  bb:32.1 },
+  '0-1':{ k:12, xwoba:.290, whiff:22.4, bb:3.2  },
+  '1-1':{ k:14, xwoba:.305, whiff:24.1, bb:6.8  },
+  '2-1':{ k:9,  xwoba:.350, whiff:18.3, bb:11.2 },
+  '3-1':{ k:5,  xwoba:.400, whiff:12.1, bb:25.4 },
   '0-2':{ k:32, xwoba:.220, whiff:38.4, bb:0    },
-  '1-2':{ k:28, xwoba:.240, whiff:35.2, bb:0    },
-  '2-2':{ k:34, xwoba:.260, whiff:40.1, bb:0    },
+  '1-2':{ k:28, xwoba:.240, whiff:35.2, bb:1.1  },
+  '2-2':{ k:34, xwoba:.260, whiff:40.1, bb:2.8  },
   '3-2':{ k:26, xwoba:.310, whiff:31.8, bb:14.2 },
 };
 
@@ -496,10 +687,10 @@ function genPitcherByCount(baseEra) {
     const cd = countData[key];
     const [b, s] = key.split('-').map(Number);
     let usage;
-    if (s >= 2)            usage = 'SL 42% · FF 32% · CH 26%';
-    else if (b >= 3)       usage = 'FF 48% · SL 28% · CH 24%';
-    else if (b===0&&s===0) usage = 'FF 52% · SL 26% · CH 22%';
-    else                   usage = 'FF 44% · SL 32% · CH 24%';
+    if (s >= 2)            usage = 'Slider 42% · Fastball 32% · Changeup 26%';
+    else if (b >= 3)       usage = 'Fastball 48% · Slider 28% · Changeup 24%';
+    else if (b===0&&s===0) usage = 'Fastball 52% · Slider 26% · Changeup 22%';
+    else                   usage = 'Fastball 44% · Slider 32% · Changeup 24%';
     out[key] = {
       k:     +(cd.k * (1 - delta * 0.3)).toFixed(1),
       xwoba: +(cd.xwoba + delta * 0.05).toFixed(3),
@@ -853,6 +1044,7 @@ function renderBatterProfile() {
     </div>
   `;
 
+  renderBatterSeasonSummary();
   buildZoneChart('batter-zone', profile.zone[state.batter.window], 'accent3');
   buildCountGrid('batter-count-grid', state.batter, renderBatterCountStats);
   renderBatterCountStats();
@@ -912,6 +1104,7 @@ function renderPitcherProfile() {
     </div>
   `;
 
+  renderPitcherSeasonSummary();
   buildZoneChart('pitcher-zone', profile.zone[state.pitcher.window], 'accent2');
   buildCountGrid('pitcher-count-grid', state.pitcher, renderPitcherCountStats);
   renderPitcherCountStats();
@@ -1026,6 +1219,13 @@ function setLBSort(s) {
   renderLeaderboard();
 }
 
+function clearLBOuts() {
+  document.querySelectorAll('#lb-outs .out-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('#lb-outs .out-btn[data-outs="0"]').classList.add('active');
+  state.leaderboard.outs = 0;
+  renderLeaderboard();
+}
+
 function clearLBCount() {
   state.leaderboard.balls = null;
   state.leaderboard.strikes = null;
@@ -1062,6 +1262,242 @@ function setPage(page, navEl) {
   if (page === 'batter')      renderBatterProfile();
   if (page === 'pitcher')     renderPitcherProfile();
   if (page === 'leaderboard') renderLeaderboard();
+  if (page === 'pitch-sequence') renderSequencePage();
+}
+
+// ══════════════════════════════════════
+// SEASON SELECTOR
+// ══════════════════════════════════════
+function onSeasonChange() {
+  state.season = parseInt(document.getElementById('season-select').value);
+  renderCountPage();
+  if (state.page === 'batter') renderBatterProfile();
+  if (state.page === 'pitcher') renderPitcherProfile();
+  if (state.page === 'leaderboard') renderLeaderboard();
+}
+
+// ══════════════════════════════════════
+// SEASON-BY-SEASON SUMMARIES
+// ══════════════════════════════════════
+function renderBatterSeasonSummary() {
+  const profile = batterProfiles[state.batter.selected];
+  if (!profile) return;
+  const seasons = [
+    {year: 'Career', data: profile.career},
+    {year: 'Season', data: profile.season},
+    {year: 'Last 7', data: profile.last7, suffix: ' games'}
+  ];
+
+  document.getElementById('batter-season-thead').innerHTML = `<tr><th>Period</th><th class="td-stat">AVG</th><th class="td-stat">OBP</th><th class="td-stat">SLG</th><th class="td-stat">HR</th><th class="td-stat">xwOBA</th><th class="td-stat">K%</th><th class="td-stat">BB%</th></tr>`;
+  document.getElementById('batter-season-body').innerHTML = seasons.map(s => `
+    <tr>
+      <td class="td-name">${s.year}${s.suffix||''}</td>
+      <td class="td-stat">${s.data.avg.toFixed(3)}</td>
+      <td class="td-stat">${s.data.obp.toFixed(3)}</td>
+      <td class="td-stat">${s.data.slg.toFixed(3)}</td>
+      <td class="td-stat">${s.data.hr}</td>
+      <td class="td-stat td-highlight">${s.data.xwoba.toFixed(3)}</td>
+      <td class="td-stat" style="color:var(--accent2)">${s.data.k.toFixed(1)}%</td>
+      <td class="td-stat">${s.data.bb.toFixed(1)}%</td>
+    </tr>
+  `).join('');
+}
+
+function renderPitcherSeasonSummary() {
+  const profile = pitcherProfiles[state.pitcher.selected];
+  if (!profile) return;
+  const seasons = [
+    {year: 'Career', data: profile.career},
+    {year: 'Season', data: profile.season},
+    {year: 'Last 7', data: profile.last7, suffix: ' games'}
+  ];
+
+  document.getElementById('pitcher-season-thead').innerHTML = `<tr><th>Period</th><th class="td-stat">ERA</th><th class="td-stat">FIP</th><th class="td-stat">WHIP</th><th class="td-stat">K/9</th><th class="td-stat">BB/9</th><th class="td-stat">HR/9</th></tr>`;
+  document.getElementById('pitcher-season-body').innerHTML = seasons.map(s => `
+    <tr>
+      <td class="td-name">${s.year}${s.suffix||''}</td>
+      <td class="td-stat td-highlight">${s.data.era.toFixed(2)}</td>
+      <td class="td-stat" style="color:var(--accent3)">${s.data.fip.toFixed(2)}</td>
+      <td class="td-stat">${s.data.whip.toFixed(2)}</td>
+      <td class="td-stat" style="color:var(--accent2)">${s.data.k9.toFixed(1)}</td>
+      <td class="td-stat">${s.data.bb9.toFixed(1)}</td>
+      <td class="td-stat">${s.data.hr9.toFixed(1)}</td>
+    </tr>
+  `).join('');
+}
+
+// ══════════════════════════════════════
+// PITCH SEQUENCE TOOL
+// ══════════════════════════════════════
+function renderSequencePage() {
+  renderSequenceBuilder();
+  renderLeagueSequenceStats();
+  renderSequencePlayerStats();
+  renderSequenceTopBottom();
+  renderSequencePitchMix();
+}
+
+function renderSequenceBuilder() {
+  const builder = document.getElementById('sequence-builder');
+  builder.innerHTML = state.sequence.pitches.map((p, i) => `
+    <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:2px;font-family:var(--mono);font-size:12px">
+      <span style="color:${p==='ball'?'var(--accent3)':p==='strike'?'var(--accent)':'var(--accent2)'}">●</span>
+      <span>${p==='ball'?'B':p==='strike'?'S':'F'}</span>
+      <button onclick="removeSequencePitch(${i})" style="border:none;background:none;color:var(--muted);cursor:pointer;padding:0;margin-left:4px">✕</button>
+    </div>
+  `).join('');
+  document.getElementById('seq-pitch-count').textContent = state.sequence.pitches.length;
+}
+
+function addSequencePitch(type) {
+  if (state.sequence.pitches.length < 25) {
+    state.sequence.pitches.push(type);
+    renderSequencePage();
+  }
+}
+
+function removeSequencePitch(index) {
+  state.sequence.pitches.splice(index, 1);
+  renderSequencePage();
+}
+
+function clearSequence() {
+  state.sequence.pitches = [];
+  renderSequencePage();
+}
+
+function renderLeagueSequenceStats() {
+  const stats = {
+    k: 15 + (state.sequence.pitches.length * 0.5),
+    xwoba: 0.320 + (state.sequence.pitches.length * 0.002),
+    bb: 8 + (state.sequence.pitches.filter(p=>p==='ball').length * 2),
+    contact: 85 - (state.sequence.pitches.length * 0.5)
+  };
+
+  document.getElementById('sequence-league-stats').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">League Strikeout Rate</div>
+      <div class="stat-value sm" style="color:var(--accent2)">${stats.k.toFixed(1)}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">League xwOBA</div>
+      <div class="stat-value sm" style="color:var(--accent)">${stats.xwoba.toFixed(3)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">League Walk Rate</div>
+      <div class="stat-value sm" style="color:var(--accent3)">${stats.bb.toFixed(1)}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Contact Rate</div>
+      <div class="stat-value sm" style="color:var(--muted)">${stats.contact.toFixed(1)}%</div>
+    </div>
+  `;
+}
+
+function updateSequencePlayer() {
+  state.sequence.selectedPlayer = document.getElementById('seq-player-search').value;
+  renderSequencePlayerStats();
+}
+
+function toggleSequenceType() {
+  state.sequence.playerType = document.getElementById('seq-type-toggle').value;
+  renderSequencePlayerStats();
+}
+
+function renderSequencePlayerStats() {
+  const player = state.sequence.selectedPlayer;
+  if (!player) {
+    document.getElementById('sequence-player-stats').innerHTML = '<div style="color:var(--muted);font-family:var(--mono);font-size:12px">Select a player to compare</div>';
+    return;
+  }
+
+  let profile, stats = {};
+  if (state.sequence.playerType === 'batter') {
+    profile = batterProfiles[player];
+    if (profile) {
+      const seasonData = profile.season;
+      const delta = (state.sequence.pitches.length * 0.03);
+      stats = {
+        xwoba: (seasonData.xwoba + delta).toFixed(3),
+        k: (seasonData.k - delta).toFixed(1),
+        bb: (seasonData.bb + delta * 0.5).toFixed(1)
+      };
+    }
+  } else {
+    profile = pitcherProfiles[player];
+    if (profile) {
+      const seasonData = profile.season;
+      const delta = (state.sequence.pitches.length * 0.02);
+      stats = {
+        k: (seasonData.k9 + delta).toFixed(1),
+        xwoba: (seasonData.fip - 0.200).toFixed(3),
+        era: (seasonData.era - delta * 0.1).toFixed(2)
+      };
+    }
+  }
+
+  document.getElementById('sequence-player-stats').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">${player}</div>
+      <div class="stat-value sm" style="color:var(--text)">${state.sequence.playerType==='batter'?'Batter':'Pitcher'}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">${state.sequence.playerType==='batter'?'xwOBA':'ERA'}</div>
+      <div class="stat-value sm" style="color:var(--accent)">${state.sequence.playerType==='batter'?stats.xwoba:stats.era}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">${state.sequence.playerType==='batter'?'K%':'K/9'}</div>
+      <div class="stat-value sm" style="color:var(--accent2)">${stats.k}${state.sequence.playerType==='batter'?'%':''}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">${state.sequence.playerType==='batter'?'BB%':'xwOBA vs'}</div>
+      <div class="stat-value sm" style="color:var(--accent3)">${stats.bb}${state.sequence.playerType==='batter'?'%':stats.xwoba}</div>
+    </div>
+  `;
+}
+
+function renderSequenceTopBottom() {
+  const topPlayers = [
+    {name: 'A. Judge', xwoba: 0.420, k: 26.8},
+    {name: 'F. Freeman', xwoba: 0.418, k: 15.2},
+    {name: 'P. Goldschmidt', xwoba: 0.389, k: 20.4},
+  ];
+  const bottomPlayers = [
+    {name: 'G. Stanton', xwoba: 0.295, k: 32.4},
+    {name: 'P. Alonso', xwoba: 0.298, k: 29.4},
+    {name: 'M. Olson', xwoba: 0.312, k: 24.8},
+  ];
+
+  const renderTable = (data, tbody) => {
+    return data.map((p, i) => `
+      <tr>
+        <td class="td-rank">${i+1}</td>
+        <td class="td-name">${p.name}</td>
+        <td class="td-stat td-highlight">${p.xwoba.toFixed(3)}</td>
+        <td class="td-stat" style="color:var(--accent2)">${p.k.toFixed(1)}%</td>
+      </tr>
+    `).join('');
+  };
+
+  document.getElementById('seq-top-thead').innerHTML = `<tr><th>#</th><th>Player</th><th class="td-stat">xwOBA</th><th class="td-stat">K%</th></tr>`;
+  document.getElementById('seq-top-body').innerHTML = renderTable(topPlayers);
+  document.getElementById('seq-bottom-thead').innerHTML = `<tr><th>#</th><th>Player</th><th class="td-stat">xwOBA</th><th class="td-stat">K%</th></tr>`;
+  document.getElementById('seq-bottom-body').innerHTML = renderTable(bottomPlayers);
+}
+
+function renderSequencePitchMix() {
+  const pitchMixes = [
+    {position: '1st pitch', mix: 'Fastball 65% · Slider 22% · Changeup 13%'},
+    {position: '2nd pitch', mix: 'Slider 42% · Fastball 35% · Changeup 23%'},
+    {position: '3rd+ pitch', mix: 'Fastball 38% · Slider 40% · Changeup 22%'},
+  ];
+
+  document.getElementById('sequence-pitch-mix').innerHTML = pitchMixes.map(p => `
+    <div style="padding:16px;border:1px solid var(--border);border-radius:2px">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">${p.position}</div>
+      <div style="font-size:13px;color:var(--text);line-height:1.6">${p.mix}</div>
+    </div>
+  `).join('');
 }
 
 // ══════════════════════════════════════
