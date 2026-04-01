@@ -262,6 +262,40 @@ def full_at_bat_timeline(
 # Leaderboards
 # ---------------------------------------------------------------------------
 
+def batting_leaderboard(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    limit: int = 10,
+    min_pa: int = 100,
+) -> pd.DataFrame:
+    """
+    Return top batters leaderboard ranked by xwOBA for a given season.
+    """
+    return con.execute(f"""
+        SELECT
+            ab.batter_id,
+            pl.full_name                        AS batter_name,
+            COUNT(DISTINCT ab.at_bat_id)        AS pa,
+            ROUND(AVG(ab.xwoba), 3)             AS xwoba,
+            ROUND(AVG(ab.woba_value), 3)        AS woba,
+            ROUND(SUM(CASE WHEN ab.final_event IN ('strikeout','strikeout_double_play')
+                          THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS k_pct,
+            ROUND(SUM(CASE WHEN ab.final_event IN ('walk','intent_walk')
+                          THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS bb_pct,
+            ROUND(SUM(CASE WHEN ab.final_event = 'home_run'
+                          THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS hr_pct,
+            ROUND(SUM(CASE WHEN ab.final_event IN ('single','double','triple','home_run')
+                          THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS avg
+        FROM at_bats ab
+        LEFT JOIN players pl ON pl.player_id = ab.batter_id
+        WHERE ab.season = {season}
+        GROUP BY ab.batter_id, pl.full_name
+        HAVING COUNT(DISTINCT ab.at_bat_id) >= {min_pa}
+        ORDER BY xwoba DESC
+        LIMIT {limit}
+    """).df()
+
+
 def stuff_plus_proxy(
     con: duckdb.DuckDBPyConnection,
     season: int,

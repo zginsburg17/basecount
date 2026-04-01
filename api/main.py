@@ -19,6 +19,7 @@ from analytics.queries import (
     pitch_sequence_patterns,
     situational_splits,
     full_at_bat_timeline,
+    batting_leaderboard,
     stuff_plus_proxy,
 )
 
@@ -136,6 +137,18 @@ def api_at_bat_timeline(game_pk: int, at_bat_number: int):
 # ---------------------------------------------------------------------------
 # Leaderboard Endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/api/leaderboard/batting")
+def api_batting_leaderboard(
+    season:      int            = 2024,
+    limit:       int            = 10,
+    min_pa:      int            = 100,
+):
+    """Top batters leaderboard for a given season."""
+    con = get_con()
+    df  = batting_leaderboard(con, season, limit, min_pa)
+    return df_to_json(df)
+
 
 @app.get("/api/leaderboard/stuff")
 def api_stuff_leaderboard(
