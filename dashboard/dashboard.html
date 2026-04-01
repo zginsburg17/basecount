@@ -207,7 +207,8 @@
         <div>
           <div class="selector-label">Outs</div>
           <div class="outs-selector" id="count-outs">
-            <button class="out-btn active" data-outs="0">0</button>
+            <button class="out-btn active" data-outs="all">All</button>
+            <button class="out-btn" data-outs="0">0</button>
             <button class="out-btn" data-outs="1">1</button>
             <button class="out-btn" data-outs="2">2</button>
           </div>
@@ -629,7 +630,7 @@
 // STATE
 // ══════════════════════════════════════
 const state = {
-  count:       { balls:0, strikes:0, outs:0, sort:'xwoba' },
+  count:       { balls:0, strikes:0, outs:null, sort:'xwoba' },
   batter:      { selected:'F. Freeman', window:'season', balls:0, strikes:0 },
   pitcher:     { selected:'C. Burnes',  window:'season', balls:0, strikes:0 },
   leaderboard: { type:'batting', window:'season', balls:null, strikes:null, outs:0, sort:'xwoba' },
@@ -874,7 +875,7 @@ function renderCountPage() {
   const avgX = 0.312, avgK = 16.8, avgW = 24.2;
 
   document.getElementById('count-display').textContent = balls + '–' + strikes;
-  document.getElementById('count-meta').textContent = ['0 outs','1 out','2 outs'][outs];
+  document.getElementById('count-meta').textContent = state.count.outs === null ? 'all outs' : ['0 outs','1 out','2 outs'][state.count.outs];
 
   document.getElementById('count-stat-cards').innerHTML = `
     <div class="stat-card">
@@ -902,6 +903,7 @@ function renderCountPage() {
   buildOutcomeMatrix();
   buildOutcomeChart();
   buildZoneChart('count-zone', countZones[key] || countZones['0-0'], 'accent3');
+  buildCountGrid('count-grid', state.count, renderCountPage);
   renderCountLeaderboard();
   document.getElementById('count-lb-title').textContent = `Batter Leaderboard — ${balls}-${strikes}`;
 }
@@ -998,7 +1000,7 @@ document.getElementById('count-outs').addEventListener('click', e => {
   if (!btn) return;
   document.querySelectorAll('#count-outs .out-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  state.count.outs = +btn.dataset.outs;
+  state.count.outs = btn.dataset.outs === 'all' ? null : +btn.dataset.outs;
   renderCountPage();
 });
 
