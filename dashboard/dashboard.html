@@ -767,10 +767,10 @@ async function initializeData() {
 }
 
 // Initialize on page load
-document.addEventListener('DOMContentLoaded', () => {
-  initializeData().then(() => {
-    renderCountPage();
-  });
+document.addEventListener('DOMContentLoaded', async () => {
+  await initializeData();
+  await initDashboard();
+  renderCountPage();
 });
 
 const countZones = {
@@ -890,113 +890,25 @@ function genPitcherByCount(baseEra) {
   return out;
 }
 
-function makeBatter(cAvg,cObp,cSlg,cHr,cXw,cK,cBb, sAvg,sObp,sSlg,sHr,sXw,sK,sBb, lAvg,lObp,lSlg,lHr,lXw,lK,lBb, zC,zS,zL) {
-  return {
-    career:{ avg:cAvg,obp:cObp,slg:cSlg,hr:cHr,xwoba:cXw,k:cK,bb:cBb },
-    season:{ avg:sAvg,obp:sObp,slg:sSlg,hr:sHr,xwoba:sXw,k:sK,bb:sBb },
-    last7: { avg:lAvg,obp:lObp,slg:lSlg,hr:lHr,xwoba:lXw,k:lK,bb:lBb },
-    zone:{ career:zC, season:zS, last7:zL },
-    byCount: genBatterByCount(sXw),
-  };
+// Leaderboard data (fetched from API)
+let batterLeaderboard = [];
+
+// API Configuration
+const API_BASE = 'http://localhost:8000';
+
+// Initialize dashboard
+async function initDashboard() {
+  try {
+    const response = await fetch(`${API_BASE}/api/leaderboard/batting?season=2024&limit=10`);
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    batterLeaderboard = await response.json();
+    renderCountPage();
+  } catch (err) {
+    console.error('Failed to fetch batter leaderboard:', err);
+    // Fallback to empty state
+    batterLeaderboard = [];
+  }
 }
-
-function makePitcher(cEra,cFip,cWhip,cK9,cBb9,cHr9, sEra,sFip,sWhip,sK9,sBb9,sHr9, lEra,lFip,lWhip,lK9,lBb9,lHr9, zC,zS,zL) {
-  return {
-    career:{ era:cEra,fip:cFip,whip:cWhip,k9:cK9,bb9:cBb9,hr9:cHr9 },
-    season:{ era:sEra,fip:sFip,whip:sWhip,k9:sK9,bb9:sBb9,hr9:sHr9 },
-    last7: { era:lEra,fip:lFip,whip:lWhip,k9:lK9,bb9:lBb9,hr9:lHr9 },
-    zone:{ career:zC, season:zS, last7:zL },
-    byCount: genPitcherByCount(sEra),
-  };
-}
-
-const batterProfiles = {
-  'F. Freeman':     makeBatter(.298,.386,.503,220,.372,18.2,12.1, .311,.401,.521,21,.391,17.1,13.4, .333,.421,.556,3,.418,15.2,14.1, [[18,24,14],[28,35,26],[16,22,12]],[[20,26,15],[30,38,28],[18,24,13]],[[22,29,17],[33,41,30],[20,26,15]]),
-  'P. Goldschmidt': makeBatter(.292,.381,.512,210,.368,22.4,11.8, .298,.379,.508,18,.374,21.8,11.4, .310,.392,.524,2,.389,20.4,12.1, [[16,22,13],[26,34,25],[15,21,12]],[[18,24,14],[28,36,27],[16,22,13]],[[20,26,15],[30,38,29],[18,24,14]]),
-  'M. Olson':       makeBatter(.268,.364,.497,196,.362,26.8,10.4, .274,.367,.499,22,.366,25.4,10.8, .288,.378,.513,3,.381,24.8,11.4, [[15,20,12],[24,32,23],[14,19,11]],[[17,22,13],[26,34,25],[15,21,12]],[[19,25,14],[28,36,27],[17,23,13]]),
-  'T. Turner':      makeBatter(.302,.372,.471,148,.356,18.8,9.8,  .309,.378,.482,14,.362,18.4,10.1, .322,.388,.495,2,.375,17.2,10.8, [[17,23,13],[27,34,25],[16,22,12]],[[19,25,14],[29,36,27],[17,23,13]],[[21,27,16],[31,38,29],[19,25,15]]),
-  'A. Judge':       makeBatter(.284,.394,.601,254,.391,28.4,14.2, .291,.398,.614,42,.402,28.1,14.8, .305,.410,.631,6,.418,26.8,15.4, [[14,19,11],[22,30,22],[13,18,10]],[[16,21,12],[24,32,24],[14,19,11]],[[18,24,13],[26,34,26],[16,21,12]]),
-  'P. Alonso':      makeBatter(.259,.352,.521,178,.358,31.4,9.8,  .262,.354,.524,31,.361,30.8,10.1, .271,.362,.538,4,.374,29.4,10.8, [[12,17,10],[20,28,21],[11,16,9]], [[14,19,11],[22,30,22],[12,17,10]],[[16,21,12],[24,32,24],[14,19,11]]),
-  'K. Tucker':      makeBatter(.278,.361,.498,136,.349,22.2,10.1, .281,.364,.502,18,.353,22.0,10.4, .292,.374,.516,2,.364,21.2,11.2, [[16,22,13],[25,33,24],[15,21,12]],[[18,24,14],[27,35,26],[16,22,13]],[[20,26,15],[29,37,28],[18,24,14]]),
-  'G. Stanton':     makeBatter(.254,.344,.516,148,.348,34.2,9.2,  .258,.347,.519,28,.352,33.8,9.6,  .265,.353,.530,4,.361,32.4,10.1, [[11,16,9],[19,27,20],[10,14,8]], [[13,18,10],[21,29,22],[11,16,9]], [[15,20,11],[23,31,24],[13,18,10]]),
-};
-
-const pitcherProfiles = {
-  'C. Burnes':    makePitcher(2.94,2.88,1.00,10.8,2.1,0.8, 2.72,2.65,0.94,11.2,1.9,0.7, 1.88,2.10,0.82,12.4,1.6,0.4, [[14,20,12],[22,30,24],[12,18,10]],[[15,22,13],[24,32,26],[13,20,11]],[[16,24,14],[26,34,28],[14,22,12]]),
-  'S. Alcantara': makePitcher(2.28,2.41,0.98,8.6,2.8,0.7,  2.58,2.70,1.02,8.9,2.6,0.8,  2.12,2.30,0.90,9.4,2.2,0.5,  [[16,22,14],[24,32,26],[14,20,12]],[[17,23,15],[25,33,27],[15,21,13]],[[18,25,16],[27,35,29],[16,22,14]]),
-  'Z. Wheeler':   makePitcher(3.16,3.08,1.08,11.0,2.4,0.9, 3.24,3.14,1.10,11.2,2.3,1.0, 2.88,2.94,0.98,11.8,2.0,0.8, [[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]],[[17,23,15],[25,33,27],[15,21,13]]),
-  'K. Gausman':   makePitcher(3.01,2.96,1.04,10.2,2.6,0.9, 3.14,3.08,1.06,10.4,2.5,1.0, 2.72,2.81,0.96,11.0,2.2,0.7, [[13,19,11],[21,29,23],[11,17,9]], [[14,20,12],[22,30,24],[12,18,10]],[[15,21,13],[23,31,25],[13,19,11]]),
-  'G. Cole':      makePitcher(3.20,3.14,1.06,11.4,2.2,1.0, 3.41,3.28,1.08,11.8,2.1,1.1, 3.08,2.98,1.00,12.2,1.9,0.9, [[14,20,12],[22,30,24],[12,18,10]],[[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]]),
-  'M. Fried':     makePitcher(3.02,2.98,1.12,9.8,2.8,0.8,  3.18,3.10,1.14,10.0,2.7,0.9, 2.76,2.84,1.04,10.6,2.4,0.7, [[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]],[[17,23,15],[25,33,27],[15,21,13]]),
-  'L. Webb':      makePitcher(3.25,3.18,1.10,9.4,3.0,0.9,  3.38,3.22,1.12,9.8,2.8,1.0,  3.01,2.96,1.02,10.4,2.5,0.8, [[14,20,12],[22,30,24],[12,18,10]],[[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]]),
-  'P. Corbin':    makePitcher(4.88,4.62,1.38,7.4,4.2,1.4,  5.12,4.84,1.42,7.0,4.4,1.5,  5.44,5.10,1.50,6.8,4.8,1.6,  [[10,14,8],[16,22,18],[8,12,7]],  [[10,14,8],[16,22,18],[8,12,7]],  [[9,13,7],[15,21,17],[7,11,6]]),
-};
-
-const lbBatting = {
-  career:[
-    {name:'F. Freeman',     pa:3421,avg:.298,obp:.386,slg:.503,hr:220,xwoba:.372,k:18.2,bb:12.1},
-    {name:'A. Judge',       pa:2814,avg:.284,obp:.394,slg:.601,hr:254,xwoba:.391,k:28.4,bb:14.2},
-    {name:'P. Goldschmidt', pa:3188,avg:.292,obp:.381,slg:.512,hr:210,xwoba:.368,k:22.4,bb:11.8},
-    {name:'M. Olson',       pa:2944,avg:.268,obp:.364,slg:.497,hr:196,xwoba:.362,k:26.8,bb:10.4},
-    {name:'T. Turner',      pa:3012,avg:.302,obp:.372,slg:.471,hr:148,xwoba:.356,k:18.8,bb:9.8 },
-    {name:'P. Alonso',      pa:2812,avg:.259,obp:.352,slg:.521,hr:178,xwoba:.358,k:31.4,bb:9.8 },
-    {name:'K. Tucker',      pa:2288,avg:.278,obp:.361,slg:.498,hr:136,xwoba:.349,k:22.2,bb:10.1},
-    {name:'G. Stanton',     pa:2244,avg:.254,obp:.344,slg:.516,hr:148,xwoba:.348,k:34.2,bb:9.2 },
-  ],
-  season:[
-    {name:'F. Freeman',     pa:624,avg:.311,obp:.401,slg:.521,hr:21,xwoba:.391,k:17.1,bb:13.4},
-    {name:'A. Judge',       pa:584,avg:.291,obp:.398,slg:.614,hr:42,xwoba:.402,k:28.1,bb:14.8},
-    {name:'P. Goldschmidt', pa:572,avg:.298,obp:.379,slg:.508,hr:18,xwoba:.374,k:21.8,bb:11.4},
-    {name:'M. Olson',       pa:601,avg:.274,obp:.367,slg:.499,hr:22,xwoba:.366,k:25.4,bb:10.8},
-    {name:'T. Turner',      pa:618,avg:.309,obp:.378,slg:.482,hr:14,xwoba:.362,k:18.4,bb:10.1},
-    {name:'P. Alonso',      pa:598,avg:.262,obp:.354,slg:.524,hr:31,xwoba:.361,k:30.8,bb:10.1},
-    {name:'K. Tucker',      pa:512,avg:.281,obp:.364,slg:.502,hr:18,xwoba:.353,k:22.0,bb:10.4},
-    {name:'G. Stanton',     pa:488,avg:.258,obp:.347,slg:.519,hr:28,xwoba:.352,k:33.8,bb:9.6 },
-  ],
-  last7:[
-    {name:'F. Freeman',     pa:28,avg:.333,obp:.421,slg:.556,hr:3,xwoba:.418,k:15.2,bb:14.1},
-    {name:'A. Judge',       pa:26,avg:.305,obp:.410,slg:.631,hr:6,xwoba:.418,k:26.8,bb:15.4},
-    {name:'T. Turner',      pa:30,avg:.322,obp:.388,slg:.495,hr:2,xwoba:.375,k:17.2,bb:10.8},
-    {name:'P. Goldschmidt', pa:25,avg:.310,obp:.392,slg:.524,hr:2,xwoba:.389,k:20.4,bb:12.1},
-    {name:'K. Tucker',      pa:24,avg:.292,obp:.374,slg:.516,hr:2,xwoba:.364,k:21.2,bb:11.2},
-    {name:'M. Olson',       pa:27,avg:.288,obp:.378,slg:.513,hr:3,xwoba:.381,k:24.8,bb:11.4},
-    {name:'P. Alonso',      pa:26,avg:.271,obp:.362,slg:.538,hr:4,xwoba:.374,k:29.4,bb:10.8},
-    {name:'G. Stanton',     pa:22,avg:.265,obp:.353,slg:.530,hr:4,xwoba:.361,k:32.4,bb:10.1},
-  ],
-};
-
-const lbPitching = {
-  career:[
-    {name:'S. Alcantara',ip:1042,era:2.28,fip:2.41,whip:0.98,k9:8.6, bb9:2.8,hr9:0.7},
-    {name:'C. Burnes',   ip:764, era:2.94,fip:2.88,whip:1.00,k9:10.8,bb9:2.1,hr9:0.8},
-    {name:'M. Fried',    ip:1088,era:3.02,fip:2.98,whip:1.12,k9:9.8, bb9:2.8,hr9:0.8},
-    {name:'K. Gausman',  ip:1188,era:3.01,fip:2.96,whip:1.04,k9:10.2,bb9:2.6,hr9:0.9},
-    {name:'Z. Wheeler',  ip:1248,era:3.16,fip:3.08,whip:1.08,k9:11.0,bb9:2.4,hr9:0.9},
-    {name:'G. Cole',     ip:1124,era:3.20,fip:3.14,whip:1.06,k9:11.4,bb9:2.2,hr9:1.0},
-    {name:'L. Webb',     ip:844, era:3.25,fip:3.18,whip:1.10,k9:9.4, bb9:3.0,hr9:0.9},
-    {name:'P. Corbin',   ip:1344,era:4.88,fip:4.62,whip:1.38,k9:7.4, bb9:4.2,hr9:1.4},
-  ],
-  season:[
-    {name:'C. Burnes',   ip:198,era:2.72,fip:2.65,whip:0.94,k9:11.2,bb9:1.9,hr9:0.7},
-    {name:'S. Alcantara',ip:228,era:2.58,fip:2.70,whip:1.02,k9:8.9, bb9:2.6,hr9:0.8},
-    {name:'M. Fried',    ip:202,era:3.18,fip:3.10,whip:1.14,k9:10.0,bb9:2.7,hr9:0.9},
-    {name:'K. Gausman',  ip:206,era:3.14,fip:3.08,whip:1.06,k9:10.4,bb9:2.5,hr9:1.0},
-    {name:'Z. Wheeler',  ip:212,era:3.24,fip:3.14,whip:1.10,k9:11.2,bb9:2.3,hr9:1.0},
-    {name:'G. Cole',     ip:198,era:3.41,fip:3.28,whip:1.08,k9:11.8,bb9:2.1,hr9:1.1},
-    {name:'L. Webb',     ip:194,era:3.38,fip:3.22,whip:1.12,k9:9.8, bb9:2.8,hr9:1.0},
-    {name:'P. Corbin',   ip:162,era:5.12,fip:4.84,whip:1.42,k9:7.0, bb9:4.4,hr9:1.5},
-  ],
-  last7:[
-    {name:'C. Burnes',   ip:48,era:1.88,fip:2.10,whip:0.82,k9:12.4,bb9:1.6,hr9:0.4},
-    {name:'S. Alcantara',ip:44,era:2.12,fip:2.30,whip:0.90,k9:9.4, bb9:2.2,hr9:0.5},
-    {name:'M. Fried',    ip:44,era:2.76,fip:2.84,whip:1.04,k9:10.6,bb9:2.4,hr9:0.7},
-    {name:'K. Gausman',  ip:43,era:2.72,fip:2.81,whip:0.96,k9:11.0,bb9:2.2,hr9:0.7},
-    {name:'Z. Wheeler',  ip:46,era:2.88,fip:2.94,whip:0.98,k9:11.8,bb9:2.0,hr9:0.8},
-    {name:'G. Cole',     ip:44,era:3.08,fip:2.98,whip:1.00,k9:12.2,bb9:1.9,hr9:0.9},
-    {name:'L. Webb',     ip:42,era:3.01,fip:2.96,whip:1.02,k9:10.4,bb9:2.5,hr9:0.8},
-    {name:'P. Corbin',   ip:38,era:5.44,fip:5.10,whip:1.50,k9:6.8, bb9:4.8,hr9:1.6},
-  ],
-};
 
 // ══════════════════════════════════════
 // GENERIC HELPERS
@@ -1211,19 +1123,20 @@ function renderCountLeaderboard() {
   const isAllCounts = balls === null || strikes === null;
   const key = isAllCounts ? null : `${balls}-${strikes}`;
 
-  let data = lbBatting.season.map(p => {
-    if (isAllCounts) {
-      // Use season stats directly for "All Counts"
-      return { ...p };
-    } else {
-      // Apply byCount modifiers for specific counts
-      const bc = batterProfiles[p.name]?.byCount[key] || {};
-      return { ...p, xwoba: bc.xwoba ?? p.xwoba, avg: bc.avg ?? p.avg, k: bc.k ?? p.k, whiff: bc.whiff ?? 22 };
-    }
+  let data = batterLeaderboard.map(p => {
+    // Map API response to expected format
+    return {
+      name: p.batter_name,
+      pa: p.pa,
+      xwoba: p.xwoba,
+      avg: p.avg || 0,
+      k: (p.k_pct || 0) * 100,  // API returns decimal, convert to percentage
+      whiff: 22,  // Default value
+    };
   });
 
   data.sort((a,b) => sort==='k' || sort==='whiff' ? b[sort]-a[sort] : b[sort]-a[sort]);
-  const maxX = Math.max(...data.map(p=>p.xwoba));
+  const maxX = Math.max(...data.map(p=>p.xwoba), 0.001);
   const tbody = document.getElementById('count-lb-body');
   tbody.innerHTML = '';
   data.forEach((p,i) => {
