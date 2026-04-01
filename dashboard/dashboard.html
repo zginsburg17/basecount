@@ -202,6 +202,7 @@
       <div class="count-selector-panel">
         <div>
           <div class="selector-label">Count (Balls – Strikes)</div>
+          <button class="window-tab" id="count-all-btn" onclick="setCountAll()" style="margin-bottom:8px">All Counts</button>
           <div class="count-grid" id="count-grid"></div>
         </div>
         <div>
@@ -213,9 +214,25 @@
             <button class="out-btn" data-outs="2">2</button>
           </div>
         </div>
+        <div>
+          <div class="selector-label">Batter Handedness</div>
+          <div class="outs-selector">
+            <button class="out-btn active" data-batter-hand="all" onclick="setCountFilter('batter-hand', 'all', this)">All</button>
+            <button class="out-btn" data-batter-hand="L" onclick="setCountFilter('batter-hand', 'L', this)">LHB</button>
+            <button class="out-btn" data-batter-hand="R" onclick="setCountFilter('batter-hand', 'R', this)">RHB</button>
+          </div>
+        </div>
+        <div>
+          <div class="selector-label">Pitcher Handedness</div>
+          <div class="outs-selector">
+            <button class="out-btn active" data-pitcher-hand="all" onclick="setCountFilter('pitcher-hand', 'all', this)">All</button>
+            <button class="out-btn" data-pitcher-hand="L" onclick="setCountFilter('pitcher-hand', 'L', this)">LHP</button>
+            <button class="out-btn" data-pitcher-hand="R" onclick="setCountFilter('pitcher-hand', 'R', this)">RHP</button>
+          </div>
+        </div>
         <div class="current-situation">
-          <div class="situation-count" id="count-display">0–0</div>
-          <div class="situation-meta" id="count-meta">0 outs</div>
+          <div class="situation-count" id="count-display">All</div>
+          <div class="situation-meta" id="count-meta">Instances: <span id="count-instances">—</span></div>
         </div>
       </div>
 
@@ -630,7 +647,7 @@
 // STATE
 // ══════════════════════════════════════
 const state = {
-  count:       { balls:0, strikes:0, outs:null, sort:'xwoba' },
+  count:       { balls:null, strikes:null, outs:null, sort:'xwoba', batter_hand:'all', pitcher_hand:'all' },
   batter:      { selected:'F. Freeman', window:'season', balls:0, strikes:0 },
   pitcher:     { selected:'C. Burnes',  window:'season', balls:0, strikes:0 },
   leaderboard: { type:'batting', window:'season', balls:null, strikes:null, outs:0, sort:'xwoba' },
@@ -666,16 +683,85 @@ const countZones = {
   '2-2':[[10,15,9],[17,24,18],[11,16,10]],'3-2':[[12,18,11],[20,28,22],[13,19,12]],
 };
 
+const countInstances = {
+  '0-0':{all:45230, L_vs_L:8940, L_vs_R:12340, R_vs_L:11220, R_vs_R:12730},
+  '1-0':{all:32100, L_vs_L:6200, L_vs_R:8900, R_vs_L:7800, R_vs_R:9200},
+  '2-0':{all:18900, L_vs_L:3600, L_vs_R:5200, R_vs_L:4700, R_vs_R:5400},
+  '3-0':{all:4200, L_vs_L:800, L_vs_R:1100, R_vs_L:1000, R_vs_R:1300},
+  '0-1':{all:38900, L_vs_L:7500, L_vs_R:10600, R_vs_L:9800, R_vs_R:11000},
+  '1-1':{all:42100, L_vs_L:8100, L_vs_R:11500, R_vs_L:10600, R_vs_R:11900},
+  '2-1':{all:28400, L_vs_L:5400, L_vs_R:7800, R_vs_L:7200, R_vs_R:8000},
+  '3-1':{all:8900, L_vs_L:1700, L_vs_R:2400, R_vs_L:2200, R_vs_R:2600},
+  '0-2':{all:32200, L_vs_L:6200, L_vs_R:8800, R_vs_L:8100, R_vs_R:9100},
+  '1-2':{all:28400, L_vs_L:5500, L_vs_R:7700, R_vs_L:7100, R_vs_R:8100},
+  '2-2':{all:18900, L_vs_L:3600, L_vs_R:5200, R_vs_L:4700, R_vs_R:5400},
+  '3-2':{all:12300, L_vs_L:2400, L_vs_R:3300, R_vs_L:3000, R_vs_R:3600},
+};
+
+function getCountInstances() {
+  const { balls, strikes, outs, batter_hand, pitcher_hand } = state.count;
+  let total = 0;
+
+  if (balls === null || strikes === null) {
+    // All counts
+    Object.keys(countInstances).forEach(key => {
+      const inst = countInstances[key];
+      const key2 = `${batter_hand === 'all' ? 'all' : batter_hand}_vs_${pitcher_hand === 'all' ? 'all' : pitcher_hand}`;
+      const val = inst[key2] || inst.all;
+      if (outs === null) {
+        total += val;
+      } else {
+        total += Math.round(val * (outs === 0 ? 0.4 : outs === 1 ? 0.35 : 0.25));
+      }
+    });
+  } else {
+    // Specific count
+    const key = `${balls}-${strikes}`;
+    const inst = countInstances[key];
+    if (inst) {
+      const key2 = `${batter_hand === 'all' ? 'all' : batter_hand}_vs_${pitcher_hand === 'all' ? 'all' : pitcher_hand}`;
+      const val = inst[key2] || inst.all;
+      if (outs === null) {
+        total = val;
+      } else {
+        total = Math.round(val * (outs === 0 ? 0.4 : outs === 1 ? 0.35 : 0.25));
+      }
+    }
+  }
+
+  return total;
+}
+
+function setCountAll() {
+  state.count.balls = null;
+  state.count.strikes = null;
+  renderCountPage();
+}
+
+function setCountFilter(filter, value, el) {
+  document.querySelectorAll(`[data-${filter}]`).forEach(b => b.parentElement.querySelectorAll('button').forEach(btn => btn.classList.remove('active')));
+  el.classList.add('active');
+  if (filter === 'batter-hand') state.count.batter_hand = value;
+  if (filter === 'pitcher-hand') state.count.pitcher_hand = value;
+  renderCountPage();
+}
+
 function genBatterByCount(baseXwoba) {
   const out = {};
+  const delta = (baseXwoba - 0.320) * 0.15;
   for (const key of Object.keys(countData)) {
     const cd = countData[key];
-    const delta = (baseXwoba - 0.320) * 0.5;
+    let usage;
+    const [b, s] = key.split('-').map(Number);
+    if (b >= 3)            usage = 'Fastball 58% · Slider 24% · Changeup 18%';
+    else if (s >= 2)       usage = 'Slider 44% · Fastball 28% · Changeup 28%';
+    else if (b===0&&s===0) usage = 'Fastball 56% · Slider 26% · Changeup 18%';
+    else                   usage = 'Fastball 50% · Slider 30% · Changeup 20%';
     out[key] = {
-      avg:   +(0.250 + delta + (cd.xwoba - 0.300) * 0.3).toFixed(3),
       xwoba: +(cd.xwoba + delta * 0.8).toFixed(3),
       k:     +(cd.k * (1 + (0.320 - baseXwoba) * 0.5)).toFixed(1),
       whiff: +(cd.whiff * (1 + (0.320 - baseXwoba) * 0.4)).toFixed(1),
+      usage,
     };
   }
   return out;
@@ -870,42 +956,92 @@ function buildZoneChart(containerId, data, color) {
 // ══════════════════════════════════════
 function renderCountPage() {
   const { balls, strikes, outs } = state.count;
-  const key = balls + '-' + strikes;
+  const isAllCounts = balls === null || strikes === null;
+
+  // Get display key for data lookup
+  const key = isAllCounts ? '0-0' : `${balls}-${strikes}`;
   const d = countData[key] || countData['0-0'];
+
+  // Calculate league averages
   const avgX = 0.312, avgK = 16.8, avgW = 24.2;
 
-  document.getElementById('count-display').textContent = balls + '–' + strikes;
-  document.getElementById('count-meta').textContent = state.count.outs === null ? 'all outs' : ['0 outs','1 out','2 outs'][state.count.outs];
+  // Display count or "All"
+  document.getElementById('count-display').textContent = isAllCounts ? 'All' : `${balls}–${strikes}`;
 
-  document.getElementById('count-stat-cards').innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">League xwOBA</div>
-      <div class="stat-value" style="color:var(--accent)">${d.xwoba.toFixed(3)}</div>
-      <div class="stat-delta ${d.xwoba > avgX ? 'up':'down'}">${d.xwoba > avgX ? '↑':'↓'} ${Math.abs(d.xwoba-avgX).toFixed(3)} vs avg</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">K Rate</div>
-      <div class="stat-value" style="color:var(--accent2)">${d.k.toFixed(1)}%</div>
-      <div class="stat-delta ${d.k > avgK ? 'down':'up'}">${d.k > avgK ? '↑':'↓'} ${Math.abs(d.k-avgK).toFixed(1)}pp vs avg</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Walk Rate</div>
-      <div class="stat-value" style="color:var(--accent3)">${d.bb.toFixed(1)}%</div>
-      <div class="stat-delta">— ${balls}-${strikes} context</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Whiff %</div>
-      <div class="stat-value">${d.whiff.toFixed(1)}%</div>
-      <div class="stat-delta ${d.whiff > avgW ? 'down':'up'}">${d.whiff > avgW ? '↑':'↓'} ${Math.abs(d.whiff-avgW).toFixed(1)}pp vs avg</div>
-    </div>
-  `;
+  // Display outs meta and instance count
+  const instanceCount = getCountInstances();
+  document.getElementById('count-meta').textContent = outs === null ? 'all outs' : ['0 outs','1 out','2 outs'][outs];
+  document.getElementById('count-instances').textContent = instanceCount.toLocaleString();
+
+  // Display stat cards based on count or all
+  if (isAllCounts) {
+    // Average across all counts
+    let sumX = 0, sumK = 0, sumW = 0;
+    const keys = Object.keys(countData);
+    keys.forEach(k => {
+      sumX += countData[k].xwoba;
+      sumK += countData[k].k;
+      sumW += countData[k].whiff;
+    });
+    const avgCountX = sumX / keys.length;
+    const avgCountK = sumK / keys.length;
+    const avgCountW = sumW / keys.length;
+
+    document.getElementById('count-stat-cards').innerHTML = `
+      <div class="stat-card">
+        <div class="stat-label">League xwOBA</div>
+        <div class="stat-value" style="color:var(--accent)">${avgCountX.toFixed(3)}</div>
+        <div class="stat-delta">average across counts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">K Rate</div>
+        <div class="stat-value" style="color:var(--accent2)">${avgCountK.toFixed(1)}%</div>
+        <div class="stat-delta">average across counts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Walk Rate</div>
+        <div class="stat-value" style="color:var(--accent3)">—</div>
+        <div class="stat-delta">varies by count</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Whiff %</div>
+        <div class="stat-value">${avgCountW.toFixed(1)}%</div>
+        <div class="stat-delta">average across counts</div>
+      </div>
+    `;
+  } else {
+    // Specific count display
+    document.getElementById('count-stat-cards').innerHTML = `
+      <div class="stat-card">
+        <div class="stat-label">League xwOBA</div>
+        <div class="stat-value" style="color:var(--accent)">${d.xwoba.toFixed(3)}</div>
+        <div class="stat-delta ${d.xwoba > avgX ? 'up':'down'}">${d.xwoba > avgX ? '↑':'↓'} ${Math.abs(d.xwoba-avgX).toFixed(3)} vs avg</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">K Rate</div>
+        <div class="stat-value" style="color:var(--accent2)">${d.k.toFixed(1)}%</div>
+        <div class="stat-delta ${d.k > avgK ? 'down':'up'}">${d.k > avgK ? '↑':'↓'} ${Math.abs(d.k-avgK).toFixed(1)}pp vs avg</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Walk Rate</div>
+        <div class="stat-value" style="color:var(--accent3)">${d.bb.toFixed(1)}%</div>
+        <div class="stat-delta">— ${balls}-${strikes} context</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Whiff %</div>
+        <div class="stat-value">${d.whiff.toFixed(1)}%</div>
+        <div class="stat-delta ${d.whiff > avgW ? 'down':'up'}">${d.whiff > avgW ? '↑':'↓'} ${Math.abs(d.whiff-avgW).toFixed(1)}pp vs avg</div>
+      </div>
+    `;
+  }
 
   buildOutcomeMatrix();
   buildOutcomeChart();
   buildZoneChart('count-zone', countZones[key] || countZones['0-0'], 'accent3');
   buildCountGrid('count-grid', state.count, renderCountPage);
   renderCountLeaderboard();
-  document.getElementById('count-lb-title').textContent = `Batter Leaderboard — ${balls}-${strikes}`;
+  const displayLabel = isAllCounts ? 'All Counts' : `${balls}-${strikes}`;
+  document.getElementById('count-lb-title').textContent = `Batter Leaderboard — ${displayLabel}`;
 }
 
 function buildOutcomeMatrix() {
@@ -969,11 +1105,20 @@ function buildOutcomeChart() {
 
 function renderCountLeaderboard() {
   const { balls, strikes, sort } = state.count;
-  const key = balls + '-' + strikes;
+  const isAllCounts = balls === null || strikes === null;
+  const key = isAllCounts ? null : `${balls}-${strikes}`;
+
   let data = lbBatting.season.map(p => {
-    const bc = batterProfiles[p.name]?.byCount[key] || {};
-    return { ...p, xwoba: bc.xwoba ?? p.xwoba, avg: bc.avg ?? p.avg, k: bc.k ?? p.k, whiff: bc.whiff ?? 22 };
+    if (isAllCounts) {
+      // Use season stats directly for "All Counts"
+      return { ...p };
+    } else {
+      // Apply byCount modifiers for specific counts
+      const bc = batterProfiles[p.name]?.byCount[key] || {};
+      return { ...p, xwoba: bc.xwoba ?? p.xwoba, avg: bc.avg ?? p.avg, k: bc.k ?? p.k, whiff: bc.whiff ?? 22 };
+    }
   });
+
   data.sort((a,b) => sort==='k' || sort==='whiff' ? b[sort]-a[sort] : b[sort]-a[sort]);
   const maxX = Math.max(...data.map(p=>p.xwoba));
   const tbody = document.getElementById('count-lb-body');
