@@ -25,36 +25,112 @@ echo "Installing requirements..."
 pip install --quiet --upgrade pip
 pip install --quiet -r "$REPO_DIR/requirements.txt"
 
-# ---------------------------------------------------------------------------
-# 4. Parse arguments
-#    Usage:  ./run.sh [etl|api|all]   (default: all)
-# ---------------------------------------------------------------------------
-MODE="${1:-all}"
-
 cd "$REPO_DIR"
 
+print_usage() {
+    cat <<'EOF'
+Usage: ./run.sh <mode> [args]
+
+General:
+  ./run.sh api
+  ./run.sh all
+  ./run.sh status
+  ./run.sh enrich
+
+ETL:
+  ./run.sh recent [days]
+  ./run.sh season <year> [chunk_days]
+  ./run.sh range <start_year> <end_year> [chunk_days]
+  ./run.sh all-history [chunk_days]
+
+Legacy aliases:
+  ./run.sh etl        -> ./run.sh recent
+  ./run.sh api        -> start API only
+  ./run.sh all        -> recent ETL then start API
+EOF
+}
+
+run_etl() {
+    MPLCONFIGDIR=/tmp/mpl python etl/pipeline.py "$@"
+}
+
+MODE="${1:-all}"
+
 case "$MODE" in
-    etl)
-        echo "Running ETL pipeline..."
-        python etl/pipeline.py
+    recent)
+        DAYS="${2:-7}"
+        echo "Loading recent Statcast data (${DAYS} days)..."
+        run_etl recent --days "$DAYS"
         ;;
+
+    season)
+        SEASON="${2:-}"
+        CHUNK_DAYS="${3:-7}"
+        if [ -z "$SEASON" ]; then
+            echo "Season mode requires a year."
+            print_usage
+            exit 1
+        fi
+        echo "Backfilling season ${SEASON}..."
+        run_etl season --season "$SEASON" --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    range)
+        START_SEASON="${2:-}"
+        END_SEASON="${3:-}"
+        CHUNK_DAYS="${4:-7}"
+        if [ -z "$START_SEASON" ] || [ -z "$END_SEASON" ]; then
+            echo "Range mode requires start and end seasons."
+            print_usage
+            exit 1
+        fi
+        echo "Backfilling seasons ${START_SEASON}-${END_SEASON}..."
+        run_etl range --season-start "$START_SEASON" --season-end "$END_SEASON" --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    all-history)
+        CHUNK_DAYS="${2:-7}"
+        echo "Backfilling full Statcast history..."
+        run_etl all-history --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    enrich)
+        echo "Enriching player metadata..."
+        run_etl enrich
+        ;;
+
+    status)
+        echo "Inspecting loaded database status..."
+        run_etl status
+        ;;
+
+    etl)
+        echo "Running ETL pipeline (recent mode)..."
+        run_etl recent
+        ;;
+
     api)
         echo "Starting API server on http://localhost:8000 ..."
         python api/main.py
         ;;
-    all)
-        echo "Running ETL pipeline..."
-        python etl/pipeline.py
 
+    all)
+        DAYS="${2:-7}"
+        echo "Loading recent Statcast data (${DAYS} days)..."
+        run_etl recent --days "$DAYS"
         echo ""
         echo "Starting API server on http://localhost:8000 ..."
         python api/main.py
         ;;
+
+    help|-h|--help)
+        print_usage
+        ;;
+
     *)
-        echo "Usage: $0 [etl|api|all]"
-        echo "  etl  - run the ETL pipeline only"
-        echo "  api  - start the API server only"
-        echo "  all  - run ETL then start the API (default)"
+        echo "Unknown mode: $MODE"
+        echo ""
+        print_usage
         exit 1
         ;;
 esac
