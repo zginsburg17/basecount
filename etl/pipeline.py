@@ -3,15 +3,19 @@ Baseball Analytics Platform - ETL Pipeline
 Ingests pitch-level Statcast data via pybaseball and loads into DuckDB.
 """
 
+import argparse
 import duckdb
 import pandas as pd
 from pybaseball import statcast, playerid_reverse_lookup
-from datetime import datetime, date
+from datetime import date, datetime, timedelta
 import logging
 import time
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+STATCAST_START_SEASON = 2015
 
 
 # ---------------------------------------------------------------------------
@@ -441,23 +445,46 @@ def load_date_range(
     return len(pitches_df)
 
 
+def season_bounds(season: int) -> tuple[date, date]:
+    """Best-effort Statcast window for a given MLB season."""
+    today = date.today()
+
+    if season < STATCAST_START_SEASON:
+        raise ValueError(f"Statcast pitch-level coverage starts in {STATCAST_START_SEASON}")
+
+    if season == 2020:
+        start = date(2020, 7, 23)
+        end = date(2020, 9, 27)
+    else:
+        start = date(season, 3, 1)
+        end = date(season, 11, 15)
+
+    if season == today.year:
+        end = min(end, today)
+
+    return start, end
+
+
+def available_statcast_seasons(current_year: Optional[int] = None) -> list[int]:
+    end_year = current_year or date.today().year
+    return list(range(STATCAST_START_SEASON, end_year + 1))
+
+
 def backfill_season(
     con: duckdb.DuckDBPyConnection,
     season: int,
     chunk_days: int = 7,
+    delay_between_chunks: float = 3.0,
 ):
     """
     Backfill a full season in weekly chunks to avoid hammering Baseball Savant.
     Typical MLB season: late March → late September.
     """
-    from datetime import timedelta
+    season_start, season_end = season_bounds(season)
+    current = season_start
+    total = 0
 
-    season_start = date(season, 3, 20)
-    season_end   = date(season, 10, 1)
-    current      = season_start
-    total        = 0
-
-    while current < season_end:
+    while current <= season_end:
         chunk_end = min(current + timedelta(days=chunk_days - 1), season_end)
         rows = load_date_range(
             con,
@@ -466,10 +493,71 @@ def backfill_season(
         )
         total += rows
         current = chunk_end + timedelta(days=1)
-        time.sleep(3)  # polite delay between chunks
+        if current <= season_end:
+            time.sleep(delay_between_chunks)
 
     log.info(f"Season {season} backfill complete. Total pitches: {total:,}")
     return total
+
+
+def backfill_season_range(
+    con: duckdb.DuckDBPyConnection,
+    season_start: int,
+    season_end: int,
+    chunk_days: int = 7,
+    delay_between_seasons: float = 5.0,
+) -> int:
+    """Backfill an inclusive season range."""
+    start, end = sorted((season_start, season_end))
+    total = 0
+
+    for idx, season in enumerate(range(start, end + 1)):
+        total += backfill_season(con, season=season, chunk_days=chunk_days)
+        if idx < (end - start):
+            time.sleep(delay_between_seasons)
+
+    log.info(f"Historical backfill {start}-{end} complete. Total pitches: {total:,}")
+    return total
+
+
+def backfill_all_history(
+    con: duckdb.DuckDBPyConnection,
+    chunk_days: int = 7,
+) -> int:
+    seasons = available_statcast_seasons()
+    return backfill_season_range(con, seasons[0], seasons[-1], chunk_days=chunk_days)
+
+
+def loaded_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
+    return [
+        row[0]
+        for row in con.execute(
+            "SELECT DISTINCT season FROM pitches WHERE season IS NOT NULL ORDER BY season"
+        ).fetchall()
+    ]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Load Statcast data into DuckDB.")
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        default="recent",
+        choices=["recent", "season", "range", "all-history", "enrich", "status"],
+        help="Load recent data, one season, a season range, all history, enrich names, or inspect DB status.",
+    )
+    parser.add_argument("--db-path", default="baseball.duckdb", help="DuckDB database path.")
+    parser.add_argument("--season", type=int, help="Single season to backfill.")
+    parser.add_argument("--season-start", type=int, help="First season in a range.")
+    parser.add_argument("--season-end", type=int, help="Last season in a range.")
+    parser.add_argument("--chunk-days", type=int, default=7, help="Chunk size for backfills.")
+    parser.add_argument("--days", type=int, default=7, help="Days of recent data to ingest in recent mode.")
+    parser.add_argument(
+        "--skip-enrich",
+        action="store_true",
+        help="Skip player metadata enrichment after loading new data.",
+    )
+    return parser.parse_args()
 
 
 # ---------------------------------------------------------------------------
@@ -477,18 +565,49 @@ def backfill_season(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    con = init_db("baseball.duckdb")
+    args = parse_args()
+    con = init_db(args.db_path)
 
-    # Example: load the most recent week
-    today = date.today()
-    week_ago = today.replace(day=today.day - 7)
-    load_date_range(
-        con,
-        start_date=week_ago.strftime("%Y-%m-%d"),
-        end_date=today.strftime("%Y-%m-%d"),
-    )
-    enrich_players(con)
+    if args.mode == "recent":
+        today = date.today()
+        start = today - timedelta(days=max(args.days - 1, 0))
+        load_date_range(
+            con,
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=today.strftime("%Y-%m-%d"),
+        )
+        if not args.skip_enrich:
+            enrich_players(con)
 
-    # To backfill a full season, uncomment:
-    # backfill_season(con, season=2024)
-    # After a full backfill, run enrich_players(con) once to populate all player metadata.
+    elif args.mode == "season":
+        if args.season is None:
+            raise SystemExit("--season is required for mode 'season'")
+        backfill_season(con, season=args.season, chunk_days=args.chunk_days)
+        if not args.skip_enrich:
+            enrich_players(con)
+
+    elif args.mode == "range":
+        if args.season_start is None or args.season_end is None:
+            raise SystemExit("--season-start and --season-end are required for mode 'range'")
+        backfill_season_range(
+            con,
+            season_start=args.season_start,
+            season_end=args.season_end,
+            chunk_days=args.chunk_days,
+        )
+        if not args.skip_enrich:
+            enrich_players(con)
+
+    elif args.mode == "all-history":
+        backfill_all_history(con, chunk_days=args.chunk_days)
+        if not args.skip_enrich:
+            enrich_players(con)
+
+    elif args.mode == "enrich":
+        enrich_players(con)
+
+    elif args.mode == "status":
+        seasons = loaded_seasons(con)
+        latest = con.execute("SELECT MIN(game_date), MAX(game_date), COUNT(*) FROM pitches").fetchone()
+        log.info(f"Loaded seasons: {seasons}")
+        log.info(f"Date span / rows: {latest}")

@@ -1,210 +1,126 @@
-// ══════════════════════════════════════
-// STATE
-// ══════════════════════════════════════
+const API_BASE = "http://localhost:8000/api";
+
 const state = {
-  count:       { balls:0, strikes:0, outs:0, sort:'xwoba' },
-  batter:      { selected:'F. Freeman', window:'season', balls:0, strikes:0 },
-  pitcher:     { selected:'C. Burnes',  window:'season', balls:0, strikes:0 },
-  leaderboard: { type:'batting', window:'season', balls:null, strikes:null, outs:0, sort:'xwoba' },
-  page: 'count',
+  count: { balls: null, strikes: null, outs: null, sort: "xwoba", batterHand: "all", pitcherHand: "all" },
+  batter: { selectedId: null, window: "season", balls: 0, strikes: 0 },
+  pitcher: { selectedId: null, window: "season", balls: 0, strikes: 0 },
+  leaderboard: { type: "batting", window: "season", balls: null, strikes: null, outs: null, sort: "xwoba", limit: 10, season: null, minPa: 25 },
+  sequence: { pitches: [], playerType: "pitcher", selectedId: null },
+  scope: { mode: "single", season: null, seasonStart: null, seasonEnd: null },
+  season: null,
+  latestGameDate: null,
+  earliestSeason: null,
+  players: { batters: [], pitchers: [] },
+  page: "count",
 };
 
-// ══════════════════════════════════════
-// DATA
-// ══════════════════════════════════════
-const countData = {
-  '0-0':{ k:5,  xwoba:.330, whiff:14.2, bb:8.1  },
-  '1-0':{ k:7,  xwoba:.345, whiff:16.1, bb:0    },
-  '2-0':{ k:4,  xwoba:.380, whiff:11.8, bb:0    },
-  '3-0':{ k:1,  xwoba:.420, whiff:5.2,  bb:0    },
-  '0-1':{ k:12, xwoba:.290, whiff:22.4, bb:0    },
-  '1-1':{ k:14, xwoba:.305, whiff:24.1, bb:0    },
-  '2-1':{ k:9,  xwoba:.350, whiff:18.3, bb:0    },
-  '3-1':{ k:5,  xwoba:.400, whiff:12.1, bb:0    },
-  '0-2':{ k:32, xwoba:.220, whiff:38.4, bb:0    },
-  '1-2':{ k:28, xwoba:.240, whiff:35.2, bb:0    },
-  '2-2':{ k:34, xwoba:.260, whiff:40.1, bb:0    },
-  '3-2':{ k:26, xwoba:.310, whiff:31.8, bb:14.2 },
+const cache = {
+  countMatrix: null,
+  batterOverview: new Map(),
+  pitcherOverview: new Map(),
 };
 
-const countZones = {
-  '0-0':[[10,16,9],[18,26,20],[12,17,10]], '1-0':[[11,17,10],[19,28,22],[13,18,11]],
-  '2-0':[[12,19,11],[22,30,24],[14,20,12]], '3-0':[[8,12,7],[14,20,15],[9,13,8]],
-  '0-1':[[9,15,8],[17,24,18],[11,16,9]],  '1-1':[[10,16,9],[18,25,19],[12,17,10]],
-  '2-1':[[11,18,10],[20,28,22],[13,19,11]],'3-1':[[10,17,9],[19,27,21],[12,18,10]],
-  '0-2':[[8,13,7],[15,22,16],[10,14,8]],  '1-2':[[9,14,8],[16,23,17],[10,15,9]],
-  '2-2':[[10,15,9],[17,24,18],[11,16,10]],'3-2':[[12,18,11],[20,28,22],[13,19,12]],
-};
+let outcomeChart;
+const apiErrors = {};
 
-function genBatterByCount(baseXwoba) {
-  const out = {};
-  for (const key of Object.keys(countData)) {
-    const cd = countData[key];
-    const delta = (baseXwoba - 0.320) * 0.5;
-    out[key] = {
-      avg:   +(0.250 + delta + (cd.xwoba - 0.300) * 0.3).toFixed(3),
-      xwoba: +(cd.xwoba + delta * 0.8).toFixed(3),
-      k:     +(cd.k * (1 + (0.320 - baseXwoba) * 0.5)).toFixed(1),
-      whiff: +(cd.whiff * (1 + (0.320 - baseXwoba) * 0.4)).toFixed(1),
-    };
-  }
-  return out;
+function showApiError(source, message) {
+  apiErrors[source] = message;
+  const banner = document.getElementById("api-error-banner");
+  const body = document.getElementById("api-error-message");
+  const entries = Object.entries(apiErrors).map(([key, value]) => `<div>${key}: ${value}</div>`).join("");
+  body.innerHTML = entries;
+  banner.style.display = entries ? "block" : "none";
 }
 
-function genPitcherByCount(baseEra) {
-  const out = {};
-  const delta = (baseEra - 3.5) * 0.1;
-  for (const key of Object.keys(countData)) {
-    const cd = countData[key];
-    const [b, s] = key.split('-').map(Number);
-    let usage;
-    if (s >= 2)            usage = 'SL 42% · FF 32% · CH 26%';
-    else if (b >= 3)       usage = 'FF 48% · SL 28% · CH 24%';
-    else if (b===0&&s===0) usage = 'FF 52% · SL 26% · CH 22%';
-    else                   usage = 'FF 44% · SL 32% · CH 24%';
-    out[key] = {
-      k:     +(cd.k * (1 - delta * 0.3)).toFixed(1),
-      xwoba: +(cd.xwoba + delta * 0.05).toFixed(3),
-      usage,
-    };
-  }
-  return out;
+function clearApiError(source) {
+  delete apiErrors[source];
+  const banner = document.getElementById("api-error-banner");
+  const body = document.getElementById("api-error-message");
+  const entries = Object.entries(apiErrors).map(([key, value]) => `<div>${key}: ${value}</div>`).join("");
+  body.innerHTML = entries;
+  banner.style.display = entries ? "block" : "none";
 }
 
-function makeBatter(cAvg,cObp,cSlg,cHr,cXw,cK,cBb, sAvg,sObp,sSlg,sHr,sXw,sK,sBb, lAvg,lObp,lSlg,lHr,lXw,lK,lBb, zC,zS,zL) {
+async function apiFetch(path, source) {
+  try {
+    const response = await fetch(`${API_BASE}${path}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    clearApiError(source);
+    return await response.json();
+  } catch (error) {
+    showApiError(source, error.message);
+    throw error;
+  }
+}
+
+function fmtPct(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return `${(Number(value) * 100).toFixed(digits)}%`;
+}
+
+function fmtRate(value, digits = 3) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return Number(value).toFixed(digits);
+}
+
+function fmtNum(value, digits = 0) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return Number(value).toFixed(digits);
+}
+
+function calcSlash(summary) {
+  const atBats = Number(summary.at_bats || 0);
+  const hits = Number(summary.hits || 0);
+  const walks = Number(summary.walks || 0);
+  const totalBases = Number(summary.total_bases || 0);
   return {
-    career:{ avg:cAvg,obp:cObp,slg:cSlg,hr:cHr,xwoba:cXw,k:cK,bb:cBb },
-    season:{ avg:sAvg,obp:sObp,slg:sSlg,hr:sHr,xwoba:sXw,k:sK,bb:sBb },
-    last7: { avg:lAvg,obp:lObp,slg:lSlg,hr:lHr,xwoba:lXw,k:lK,bb:lBb },
-    zone:{ career:zC, season:zS, last7:zL },
-    byCount: genBatterByCount(sXw),
+    avg: atBats ? (hits / atBats) : 0,
+    obp: (Number(summary.pa || 0)) ? ((hits + walks) / Number(summary.pa || 0)) : 0,
+    slg: atBats ? (totalBases / atBats) : 0,
   };
 }
 
-function makePitcher(cEra,cFip,cWhip,cK9,cBb9,cHr9, sEra,sFip,sWhip,sK9,sBb9,sHr9, lEra,lFip,lWhip,lK9,lBb9,lHr9, zC,zS,zL) {
-  return {
-    career:{ era:cEra,fip:cFip,whip:cWhip,k9:cK9,bb9:cBb9,hr9:cHr9 },
-    season:{ era:sEra,fip:sFip,whip:sWhip,k9:sK9,bb9:sBb9,hr9:sHr9 },
-    last7: { era:lEra,fip:lFip,whip:lWhip,k9:lK9,bb9:lBb9,hr9:lHr9 },
-    zone:{ career:zC, season:zS, last7:zL },
-    byCount: genPitcherByCount(sEra),
-  };
+function buildQuery(params) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== "") {
+      search.set(key, value);
+    }
+  });
+  const query = search.toString();
+  return query ? `?${query}` : "";
 }
 
-const batterProfiles = {
-  'F. Freeman':     makeBatter(.298,.386,.503,220,.372,18.2,12.1, .311,.401,.521,21,.391,17.1,13.4, .333,.421,.556,3,.418,15.2,14.1, [[18,24,14],[28,35,26],[16,22,12]],[[20,26,15],[30,38,28],[18,24,13]],[[22,29,17],[33,41,30],[20,26,15]]),
-  'P. Goldschmidt': makeBatter(.292,.381,.512,210,.368,22.4,11.8, .298,.379,.508,18,.374,21.8,11.4, .310,.392,.524,2,.389,20.4,12.1, [[16,22,13],[26,34,25],[15,21,12]],[[18,24,14],[28,36,27],[16,22,13]],[[20,26,15],[30,38,29],[18,24,14]]),
-  'M. Olson':       makeBatter(.268,.364,.497,196,.362,26.8,10.4, .274,.367,.499,22,.366,25.4,10.8, .288,.378,.513,3,.381,24.8,11.4, [[15,20,12],[24,32,23],[14,19,11]],[[17,22,13],[26,34,25],[15,21,12]],[[19,25,14],[28,36,27],[17,23,13]]),
-  'T. Turner':      makeBatter(.302,.372,.471,148,.356,18.8,9.8,  .309,.378,.482,14,.362,18.4,10.1, .322,.388,.495,2,.375,17.2,10.8, [[17,23,13],[27,34,25],[16,22,12]],[[19,25,14],[29,36,27],[17,23,13]],[[21,27,16],[31,38,29],[19,25,15]]),
-  'A. Judge':       makeBatter(.284,.394,.601,254,.391,28.4,14.2, .291,.398,.614,42,.402,28.1,14.8, .305,.410,.631,6,.418,26.8,15.4, [[14,19,11],[22,30,22],[13,18,10]],[[16,21,12],[24,32,24],[14,19,11]],[[18,24,13],[26,34,26],[16,21,12]]),
-  'P. Alonso':      makeBatter(.259,.352,.521,178,.358,31.4,9.8,  .262,.354,.524,31,.361,30.8,10.1, .271,.362,.538,4,.374,29.4,10.8, [[12,17,10],[20,28,21],[11,16,9]], [[14,19,11],[22,30,22],[12,17,10]],[[16,21,12],[24,32,24],[14,19,11]]),
-  'K. Tucker':      makeBatter(.278,.361,.498,136,.349,22.2,10.1, .281,.364,.502,18,.353,22.0,10.4, .292,.374,.516,2,.364,21.2,11.2, [[16,22,13],[25,33,24],[15,21,12]],[[18,24,14],[27,35,26],[16,22,13]],[[20,26,15],[29,37,28],[18,24,14]]),
-  'G. Stanton':     makeBatter(.254,.344,.516,148,.348,34.2,9.2,  .258,.347,.519,28,.352,33.8,9.6,  .265,.353,.530,4,.361,32.4,10.1, [[11,16,9],[19,27,20],[10,14,8]], [[13,18,10],[21,29,22],[11,16,9]], [[15,20,11],[23,31,24],[13,18,10]]),
-};
-
-const pitcherProfiles = {
-  'C. Burnes':    makePitcher(2.94,2.88,1.00,10.8,2.1,0.8, 2.72,2.65,0.94,11.2,1.9,0.7, 1.88,2.10,0.82,12.4,1.6,0.4, [[14,20,12],[22,30,24],[12,18,10]],[[15,22,13],[24,32,26],[13,20,11]],[[16,24,14],[26,34,28],[14,22,12]]),
-  'S. Alcantara': makePitcher(2.28,2.41,0.98,8.6,2.8,0.7,  2.58,2.70,1.02,8.9,2.6,0.8,  2.12,2.30,0.90,9.4,2.2,0.5,  [[16,22,14],[24,32,26],[14,20,12]],[[17,23,15],[25,33,27],[15,21,13]],[[18,25,16],[27,35,29],[16,22,14]]),
-  'Z. Wheeler':   makePitcher(3.16,3.08,1.08,11.0,2.4,0.9, 3.24,3.14,1.10,11.2,2.3,1.0, 2.88,2.94,0.98,11.8,2.0,0.8, [[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]],[[17,23,15],[25,33,27],[15,21,13]]),
-  'K. Gausman':   makePitcher(3.01,2.96,1.04,10.2,2.6,0.9, 3.14,3.08,1.06,10.4,2.5,1.0, 2.72,2.81,0.96,11.0,2.2,0.7, [[13,19,11],[21,29,23],[11,17,9]], [[14,20,12],[22,30,24],[12,18,10]],[[15,21,13],[23,31,25],[13,19,11]]),
-  'G. Cole':      makePitcher(3.20,3.14,1.06,11.4,2.2,1.0, 3.41,3.28,1.08,11.8,2.1,1.1, 3.08,2.98,1.00,12.2,1.9,0.9, [[14,20,12],[22,30,24],[12,18,10]],[[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]]),
-  'M. Fried':     makePitcher(3.02,2.98,1.12,9.8,2.8,0.8,  3.18,3.10,1.14,10.0,2.7,0.9, 2.76,2.84,1.04,10.6,2.4,0.7, [[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]],[[17,23,15],[25,33,27],[15,21,13]]),
-  'L. Webb':      makePitcher(3.25,3.18,1.10,9.4,3.0,0.9,  3.38,3.22,1.12,9.8,2.8,1.0,  3.01,2.96,1.02,10.4,2.5,0.8, [[14,20,12],[22,30,24],[12,18,10]],[[15,21,13],[23,31,25],[13,19,11]],[[16,22,14],[24,32,26],[14,20,12]]),
-  'P. Corbin':    makePitcher(4.88,4.62,1.38,7.4,4.2,1.4,  5.12,4.84,1.42,7.0,4.4,1.5,  5.44,5.10,1.50,6.8,4.8,1.6,  [[10,14,8],[16,22,18],[8,12,7]],  [[10,14,8],[16,22,18],[8,12,7]],  [[9,13,7],[15,21,17],[7,11,6]]),
-};
-
-const lbBatting = {
-  career:[
-    {name:'F. Freeman',     pa:3421,avg:.298,obp:.386,slg:.503,hr:220,xwoba:.372,k:18.2,bb:12.1},
-    {name:'A. Judge',       pa:2814,avg:.284,obp:.394,slg:.601,hr:254,xwoba:.391,k:28.4,bb:14.2},
-    {name:'P. Goldschmidt', pa:3188,avg:.292,obp:.381,slg:.512,hr:210,xwoba:.368,k:22.4,bb:11.8},
-    {name:'M. Olson',       pa:2944,avg:.268,obp:.364,slg:.497,hr:196,xwoba:.362,k:26.8,bb:10.4},
-    {name:'T. Turner',      pa:3012,avg:.302,obp:.372,slg:.471,hr:148,xwoba:.356,k:18.8,bb:9.8 },
-    {name:'P. Alonso',      pa:2812,avg:.259,obp:.352,slg:.521,hr:178,xwoba:.358,k:31.4,bb:9.8 },
-    {name:'K. Tucker',      pa:2288,avg:.278,obp:.361,slg:.498,hr:136,xwoba:.349,k:22.2,bb:10.1},
-    {name:'G. Stanton',     pa:2244,avg:.254,obp:.344,slg:.516,hr:148,xwoba:.348,k:34.2,bb:9.2 },
-  ],
-  season:[
-    {name:'F. Freeman',     pa:624,avg:.311,obp:.401,slg:.521,hr:21,xwoba:.391,k:17.1,bb:13.4},
-    {name:'A. Judge',       pa:584,avg:.291,obp:.398,slg:.614,hr:42,xwoba:.402,k:28.1,bb:14.8},
-    {name:'P. Goldschmidt', pa:572,avg:.298,obp:.379,slg:.508,hr:18,xwoba:.374,k:21.8,bb:11.4},
-    {name:'M. Olson',       pa:601,avg:.274,obp:.367,slg:.499,hr:22,xwoba:.366,k:25.4,bb:10.8},
-    {name:'T. Turner',      pa:618,avg:.309,obp:.378,slg:.482,hr:14,xwoba:.362,k:18.4,bb:10.1},
-    {name:'P. Alonso',      pa:598,avg:.262,obp:.354,slg:.524,hr:31,xwoba:.361,k:30.8,bb:10.1},
-    {name:'K. Tucker',      pa:512,avg:.281,obp:.364,slg:.502,hr:18,xwoba:.353,k:22.0,bb:10.4},
-    {name:'G. Stanton',     pa:488,avg:.258,obp:.347,slg:.519,hr:28,xwoba:.352,k:33.8,bb:9.6 },
-  ],
-  last7:[
-    {name:'F. Freeman',     pa:28,avg:.333,obp:.421,slg:.556,hr:3,xwoba:.418,k:15.2,bb:14.1},
-    {name:'A. Judge',       pa:26,avg:.305,obp:.410,slg:.631,hr:6,xwoba:.418,k:26.8,bb:15.4},
-    {name:'T. Turner',      pa:30,avg:.322,obp:.388,slg:.495,hr:2,xwoba:.375,k:17.2,bb:10.8},
-    {name:'P. Goldschmidt', pa:25,avg:.310,obp:.392,slg:.524,hr:2,xwoba:.389,k:20.4,bb:12.1},
-    {name:'K. Tucker',      pa:24,avg:.292,obp:.374,slg:.516,hr:2,xwoba:.364,k:21.2,bb:11.2},
-    {name:'M. Olson',       pa:27,avg:.288,obp:.378,slg:.513,hr:3,xwoba:.381,k:24.8,bb:11.4},
-    {name:'P. Alonso',      pa:26,avg:.271,obp:.362,slg:.538,hr:4,xwoba:.374,k:29.4,bb:10.8},
-    {name:'G. Stanton',     pa:22,avg:.265,obp:.353,slg:.530,hr:4,xwoba:.361,k:32.4,bb:10.1},
-  ],
-};
-
-const lbPitching = {
-  career:[
-    {name:'S. Alcantara',ip:1042,era:2.28,fip:2.41,whip:0.98,k9:8.6, bb9:2.8,hr9:0.7},
-    {name:'C. Burnes',   ip:764, era:2.94,fip:2.88,whip:1.00,k9:10.8,bb9:2.1,hr9:0.8},
-    {name:'M. Fried',    ip:1088,era:3.02,fip:2.98,whip:1.12,k9:9.8, bb9:2.8,hr9:0.8},
-    {name:'K. Gausman',  ip:1188,era:3.01,fip:2.96,whip:1.04,k9:10.2,bb9:2.6,hr9:0.9},
-    {name:'Z. Wheeler',  ip:1248,era:3.16,fip:3.08,whip:1.08,k9:11.0,bb9:2.4,hr9:0.9},
-    {name:'G. Cole',     ip:1124,era:3.20,fip:3.14,whip:1.06,k9:11.4,bb9:2.2,hr9:1.0},
-    {name:'L. Webb',     ip:844, era:3.25,fip:3.18,whip:1.10,k9:9.4, bb9:3.0,hr9:0.9},
-    {name:'P. Corbin',   ip:1344,era:4.88,fip:4.62,whip:1.38,k9:7.4, bb9:4.2,hr9:1.4},
-  ],
-  season:[
-    {name:'C. Burnes',   ip:198,era:2.72,fip:2.65,whip:0.94,k9:11.2,bb9:1.9,hr9:0.7},
-    {name:'S. Alcantara',ip:228,era:2.58,fip:2.70,whip:1.02,k9:8.9, bb9:2.6,hr9:0.8},
-    {name:'M. Fried',    ip:202,era:3.18,fip:3.10,whip:1.14,k9:10.0,bb9:2.7,hr9:0.9},
-    {name:'K. Gausman',  ip:206,era:3.14,fip:3.08,whip:1.06,k9:10.4,bb9:2.5,hr9:1.0},
-    {name:'Z. Wheeler',  ip:212,era:3.24,fip:3.14,whip:1.10,k9:11.2,bb9:2.3,hr9:1.0},
-    {name:'G. Cole',     ip:198,era:3.41,fip:3.28,whip:1.08,k9:11.8,bb9:2.1,hr9:1.1},
-    {name:'L. Webb',     ip:194,era:3.38,fip:3.22,whip:1.12,k9:9.8, bb9:2.8,hr9:1.0},
-    {name:'P. Corbin',   ip:162,era:5.12,fip:4.84,whip:1.42,k9:7.0, bb9:4.4,hr9:1.5},
-  ],
-  last7:[
-    {name:'C. Burnes',   ip:48,era:1.88,fip:2.10,whip:0.82,k9:12.4,bb9:1.6,hr9:0.4},
-    {name:'S. Alcantara',ip:44,era:2.12,fip:2.30,whip:0.90,k9:9.4, bb9:2.2,hr9:0.5},
-    {name:'M. Fried',    ip:44,era:2.76,fip:2.84,whip:1.04,k9:10.6,bb9:2.4,hr9:0.7},
-    {name:'K. Gausman',  ip:43,era:2.72,fip:2.81,whip:0.96,k9:11.0,bb9:2.2,hr9:0.7},
-    {name:'Z. Wheeler',  ip:46,era:2.88,fip:2.94,whip:0.98,k9:11.8,bb9:2.0,hr9:0.8},
-    {name:'G. Cole',     ip:44,era:3.08,fip:2.98,whip:1.00,k9:12.2,bb9:1.9,hr9:0.9},
-    {name:'L. Webb',     ip:42,era:3.01,fip:2.96,whip:1.02,k9:10.4,bb9:2.5,hr9:0.8},
-    {name:'P. Corbin',   ip:38,era:5.44,fip:5.10,whip:1.50,k9:6.8, bb9:4.8,hr9:1.6},
-  ],
-};
-
-// ══════════════════════════════════════
-// GENERIC HELPERS
-// ══════════════════════════════════════
 function buildCountGrid(containerId, stateRef, onSelect) {
   const grid = document.getElementById(containerId);
   if (!grid) return;
-  grid.innerHTML = '';
-  const corner = document.createElement('div');
-  corner.className = 'count-cell hdr';
+  grid.innerHTML = "";
+
+  const corner = document.createElement("div");
+  corner.className = "count-cell hdr";
   grid.appendChild(corner);
-  for (let b = 0; b <= 3; b++) {
-    const el = document.createElement('div');
-    el.className = 'count-cell hdr';
-    el.textContent = b + 'B';
-    grid.appendChild(el);
+
+  for (let b = 0; b <= 3; b += 1) {
+    const head = document.createElement("div");
+    head.className = "count-cell hdr";
+    head.textContent = `${b}B`;
+    grid.appendChild(head);
   }
-  for (let s = 0; s <= 2; s++) {
-    const lbl = document.createElement('div');
-    lbl.className = 'count-cell hdr';
-    lbl.textContent = s + 'S';
-    grid.appendChild(lbl);
-    for (let b = 0; b <= 3; b++) {
-      const cell = document.createElement('div');
-      cell.className = 'count-cell' + (stateRef.balls === b && stateRef.strikes === s ? ' active' : '');
-      cell.textContent = b + '-' + s;
-      cell.addEventListener('click', () => {
+
+  for (let s = 0; s <= 2; s += 1) {
+    const rowHead = document.createElement("div");
+    rowHead.className = "count-cell hdr";
+    rowHead.textContent = `${s}S`;
+    grid.appendChild(rowHead);
+
+    for (let b = 0; b <= 3; b += 1) {
+      const cell = document.createElement("div");
+      const active = stateRef.balls === b && stateRef.strikes === s;
+      cell.className = `count-cell${active ? " active" : ""}`;
+      cell.textContent = `${b}-${s}`;
+      cell.addEventListener("click", () => {
         stateRef.balls = b;
         stateRef.strikes = s;
         onSelect();
@@ -214,95 +130,197 @@ function buildCountGrid(containerId, stateRef, onSelect) {
   }
 }
 
-function buildZoneChart(containerId, data, color) {
+function buildZoneChart(containerId, data, colorVar) {
   const grid = document.getElementById(containerId);
   if (!grid) return;
-  grid.innerHTML = '';
-  const max = Math.max(...data.flat());
-  data.forEach(row => row.forEach(f => {
-    const cell = document.createElement('div');
-    cell.className = 'zone-cell';
-    const pct = f / max;
-    cell.style.background = color === 'accent2'
-      ? `rgba(232,93,58,${0.05 + pct * 0.75})`
-      : `rgba(91,143,255,${0.05 + pct * 0.75})`;
-    cell.style.color = pct > 0.6 ? '#fff' : 'var(--muted)';
-    cell.textContent = f + '%';
-    grid.appendChild(cell);
-  }));
-}
-
-// ══════════════════════════════════════
-// COUNT STATE PAGE
-// ══════════════════════════════════════
-function renderCountPage() {
-  const { balls, strikes, outs } = state.count;
-  const key = balls + '-' + strikes;
-  const d = countData[key] || countData['0-0'];
-  const avgX = 0.312, avgK = 16.8, avgW = 24.2;
-
-  document.getElementById('count-display').textContent = balls + '–' + strikes;
-  document.getElementById('count-meta').textContent = ['0 outs','1 out','2 outs'][outs];
-
-  document.getElementById('count-stat-cards').innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">League xwOBA</div>
-      <div class="stat-value" style="color:var(--accent)">${d.xwoba.toFixed(3)}</div>
-      <div class="stat-delta ${d.xwoba > avgX ? 'up':'down'}">${d.xwoba > avgX ? '↑':'↓'} ${Math.abs(d.xwoba-avgX).toFixed(3)} vs avg</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">K Rate</div>
-      <div class="stat-value" style="color:var(--accent2)">${d.k.toFixed(1)}%</div>
-      <div class="stat-delta ${d.k > avgK ? 'down':'up'}">${d.k > avgK ? '↑':'↓'} ${Math.abs(d.k-avgK).toFixed(1)}pp vs avg</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Walk Rate</div>
-      <div class="stat-value" style="color:var(--accent3)">${d.bb.toFixed(1)}%</div>
-      <div class="stat-delta">— ${balls}-${strikes} context</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Whiff %</div>
-      <div class="stat-value">${d.whiff.toFixed(1)}%</div>
-      <div class="stat-delta ${d.whiff > avgW ? 'down':'up'}">${d.whiff > avgW ? '↑':'↓'} ${Math.abs(d.whiff-avgW).toFixed(1)}pp vs avg</div>
-    </div>
-  `;
-
-  buildOutcomeMatrix();
-  buildOutcomeChart();
-  buildZoneChart('count-zone', countZones[key] || countZones['0-0'], 'accent3');
-  renderCountLeaderboard();
-  document.getElementById('count-lb-title').textContent = `Batter Leaderboard — ${balls}-${strikes}`;
-}
-
-function buildOutcomeMatrix() {
-  const { balls, strikes } = state.count;
-  const container = document.getElementById('outcome-matrix');
-  container.innerHTML = '';
-  const corner = document.createElement('div'); corner.className = 'matrix-axis-label'; container.appendChild(corner);
-  ['0B','1B','2B','3B'].forEach(l => {
-    const el = document.createElement('div'); el.className = 'matrix-axis-label';
-    el.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--muted)';
-    el.textContent = l; container.appendChild(el);
+  grid.innerHTML = "";
+  const flat = data.flat();
+  const max = Math.max(1, ...flat);
+  data.forEach((row) => {
+    row.forEach((value) => {
+      const cell = document.createElement("div");
+      cell.className = "zone-cell";
+      const pct = value / max;
+      const rgb = colorVar === "accent2" ? "232,93,58" : "91,143,255";
+      cell.style.background = `rgba(${rgb},${0.08 + pct * 0.72})`;
+      cell.style.color = pct > 0.55 ? "#fff" : "var(--muted)";
+      cell.textContent = value ? `${value}` : "0";
+      grid.appendChild(cell);
+    });
   });
-  for (let s = 0; s <= 2; s++) {
-    const rl = document.createElement('div'); rl.className = 'matrix-axis-label';
-    rl.style.cssText = 'font-family:var(--mono);font-size:9px;color:var(--muted)';
-    rl.textContent = s+'S'; container.appendChild(rl);
-    for (let b = 0; b <= 3; b++) {
-      const key = b+'-'+s;
-      const d = countData[key] || {k:15};
-      const pct = d.k / 40;
-      const isSel = b === balls && s === strikes;
-      const cell = document.createElement('div');
-      cell.className = 'matrix-cell';
-      cell.style.background = isSel ? 'var(--accent)' : `rgba(${Math.round(30+pct*200)},${Math.round(200-pct*180)},60,${0.15+pct*0.5})`;
-      cell.style.color = isSel ? '#000' : 'var(--text)';
-      cell.style.outline = isSel ? '2px solid var(--accent)' : 'none';
-      cell.innerHTML = `<span class="cell-val">${d.k}%</span>`;
-      cell.title = `${b}-${s}: K%=${d.k}%, xwOBA=${d.xwoba}`;
-      cell.addEventListener('click', () => {
-        state.count.balls = b; state.count.strikes = s;
-        buildCountGrid('count-grid', state.count, renderCountPage);
+}
+
+function populatePlayerLists() {
+  const batterList = document.getElementById("batter-list");
+  const pitcherList = document.getElementById("pitcher-list");
+  const seqList = document.getElementById("seq-player-list");
+  batterList.innerHTML = state.players.batters.map((player) => `<option value="${player.name}"></option>`).join("");
+  pitcherList.innerHTML = state.players.pitchers.map((player) => `<option value="${player.name}"></option>`).join("");
+  seqList.innerHTML = state.players.pitchers.map((player) => `<option value="${player.name}"></option>`).join("");
+}
+
+function lookupPlayerByName(role, name) {
+  const players = role === "batter" ? state.players.batters : state.players.pitchers;
+  return players.find((player) => player.name === name) || null;
+}
+
+function playerName(role, id) {
+  const players = role === "batter" ? state.players.batters : state.players.pitchers;
+  return players.find((player) => player.id === id)?.name || `${role === "batter" ? "Batter" : "Pitcher"} #${id}`;
+}
+
+function selectedSeason() {
+  return Number(document.getElementById("lb-season").value) || state.season;
+}
+
+function selectedSeasonStart() {
+  return Number(document.getElementById("lb-season-start").value) || state.earliestSeason || state.season;
+}
+
+function selectedSeasonEnd() {
+  return Number(document.getElementById("lb-season-end").value) || state.season;
+}
+
+function activeSeasonQuery(windowName = "season") {
+  const mode = document.getElementById("scope-mode")?.value || state.scope.mode;
+  if (windowName === "last7" || windowName === "career") {
+    return { window: windowName };
+  }
+
+  if (mode === "range") {
+    const start = Math.min(selectedSeasonStart(), selectedSeasonEnd());
+    const end = Math.max(selectedSeasonStart(), selectedSeasonEnd());
+    return { window: "season", season_start: start, season_end: end };
+  }
+
+  return { window: "season", season: selectedSeason() };
+}
+
+function activeSeasonLabel(windowName = "season") {
+  const mode = document.getElementById("scope-mode")?.value || state.scope.mode;
+  if (windowName === "career") return "All loaded seasons";
+  if (windowName === "last7") return "Last 7 days";
+  if (mode === "range") {
+    const start = Math.min(selectedSeasonStart(), selectedSeasonEnd());
+    const end = Math.max(selectedSeasonStart(), selectedSeasonEnd());
+    return `${start}-${end}`;
+  }
+  return `${selectedSeason()}`;
+}
+
+function syncScopeControls() {
+  const mode = document.getElementById("scope-mode").value;
+  state.scope.mode = mode;
+  document.getElementById("single-season-wrap").style.display = mode === "single" ? "flex" : "none";
+  document.getElementById("range-season-wrap").style.display = mode === "range" ? "flex" : "none";
+  document.getElementById("season-scope-label").textContent = activeSeasonLabel("season");
+}
+
+async function loadMetaContext() {
+  const context = await apiFetch("/meta/context", "context");
+  state.season = context.latest_season;
+  state.latestGameDate = context.latest_game_date;
+  state.earliestSeason = context.earliest_season;
+  state.players.batters = context.batters || [];
+  state.players.pitchers = context.pitchers || [];
+  state.leaderboard.season = context.latest_season;
+  state.scope.season = context.latest_season;
+  state.scope.seasonStart = context.earliest_season;
+  state.scope.seasonEnd = context.latest_season;
+  document.getElementById("lb-season").value = context.latest_season;
+  document.getElementById("lb-season-start").value = context.earliest_season;
+  document.getElementById("lb-season-end").value = context.latest_season;
+  populatePlayerLists();
+  syncScopeControls();
+
+  if (state.players.batters.length > 0) {
+    state.batter.selectedId = state.players.batters[0].id;
+    document.getElementById("batter-select").value = state.players.batters[0].name;
+  }
+  if (state.players.pitchers.length > 0) {
+    state.pitcher.selectedId = state.players.pitchers[0].id;
+    state.sequence.selectedId = state.players.pitchers[0].id;
+    document.getElementById("pitcher-select").value = state.players.pitchers[0].name;
+    document.getElementById("seq-player-search").value = state.players.pitchers[0].name;
+  }
+}
+
+async function fetchCountMatrix() {
+  const query = buildQuery({
+    ...activeSeasonQuery("season"),
+    stand: state.count.batterHand,
+    p_throws: state.count.pitcherHand,
+  });
+  const rows = await apiFetch(`/count-state/outcome-matrix${query}`, "count-matrix");
+  cache.countMatrix = rows;
+  return rows;
+}
+
+async function fetchCountZoneMap() {
+  const query = buildQuery({
+    balls: state.count.balls,
+    strikes: state.count.strikes,
+    outs: state.count.outs,
+    ...activeSeasonQuery("season"),
+    stand: state.count.batterHand,
+    p_throws: state.count.pitcherHand,
+  });
+  return apiFetch(`/count-state/zone-map${query}`, "count-zone");
+}
+
+async function fetchCountLeaderboard() {
+  const query = buildQuery({
+    ...activeSeasonQuery("season"),
+    limit: Number(document.getElementById("lb-limit").value) || state.leaderboard.limit,
+    min_pa: Number(document.getElementById("lb-min-pa").value) || state.leaderboard.minPa,
+    balls: state.count.balls,
+    strikes: state.count.strikes,
+    outs: state.count.outs,
+    stand: state.count.batterHand,
+    p_throws: state.count.pitcherHand,
+  });
+  const payload = state.count.balls === null || state.count.strikes === null
+    ? await apiFetch(`/leaderboard/batting${query}`, "count-leaderboard")
+    : (await apiFetch(`/count-state/batter-splits${query}`, "count-leaderboard")).results;
+  return payload || [];
+}
+
+function buildOutcomeMatrix(rows) {
+  const container = document.getElementById("outcome-matrix");
+  container.innerHTML = "";
+
+  const corner = document.createElement("div");
+  corner.className = "matrix-axis-label";
+  container.appendChild(corner);
+
+  ["0B", "1B", "2B", "3B"].forEach((label) => {
+    const head = document.createElement("div");
+    head.className = "matrix-axis-label";
+    head.style.cssText = "font-family:var(--mono);font-size:9px;color:var(--muted)";
+    head.textContent = label;
+    container.appendChild(head);
+  });
+
+  for (let s = 0; s <= 2; s += 1) {
+    const head = document.createElement("div");
+    head.className = "matrix-axis-label";
+    head.style.cssText = "font-family:var(--mono);font-size:9px;color:var(--muted)";
+    head.textContent = `${s}S`;
+    container.appendChild(head);
+
+    for (let b = 0; b <= 3; b += 1) {
+      const row = rows.find((entry) => entry.balls === b && entry.strikes === s) || {};
+      const value = Number(row.k_pct || 0);
+      const active = state.count.balls === b && state.count.strikes === s;
+      const cell = document.createElement("div");
+      cell.className = "matrix-cell";
+      cell.style.background = active ? "var(--accent)" : `rgba(91,143,255,${0.12 + value * 0.55})`;
+      cell.style.color = active ? "#000" : "var(--text)";
+      cell.innerHTML = `<span class="cell-val">${fmtPct(value, 0)}</span>`;
+      cell.addEventListener("click", () => {
+        state.count.balls = b;
+        state.count.strikes = s;
+        buildCountGrid("count-grid", state.count, renderCountPage);
         renderCountPage();
       });
       container.appendChild(cell);
@@ -310,322 +328,565 @@ function buildOutcomeMatrix() {
   }
 }
 
-let outcomeChart;
-function buildOutcomeChart() {
-  const { balls, strikes } = state.count;
-  const ctx = document.getElementById('outcome-chart').getContext('2d');
-  const keys = Object.keys(countData);
-  const colors = keys.map(k => {
-    const [b,s] = k.split('-').map(Number);
-    return b===balls && s===strikes ? 'rgba(200,240,78,0.85)' : 'rgba(91,143,255,0.35)';
-  });
+function buildOutcomeChart(rows) {
+  const ctx = document.getElementById("outcome-chart").getContext("2d");
+  const ordered = [];
+  for (let s = 0; s <= 2; s += 1) {
+    for (let b = 0; b <= 3; b += 1) {
+      ordered.push(rows.find((entry) => entry.balls === b && entry.strikes === s) || { count: `${b}-${s}`, k_pct: 0 });
+    }
+  }
+
   if (outcomeChart) outcomeChart.destroy();
   outcomeChart = new Chart(ctx, {
-    type:'bar',
-    data:{ labels:keys, datasets:[{ data:keys.map(k=>countData[k].k), backgroundColor:colors, borderRadius:2, borderSkipped:false }] },
-    options:{
-      plugins:{legend:{display:false}},
-      scales:{
-        x:{ticks:{font:{family:'DM Mono',size:9},color:'#5a5f72'},grid:{color:'#1f2332'}},
-        y:{ticks:{font:{family:'DM Mono',size:9},color:'#5a5f72'},grid:{color:'#1f2332'},title:{display:true,text:'K%',font:{family:'DM Mono',size:9},color:'#5a5f72'}},
+    type: "bar",
+    data: {
+      labels: ordered.map((row) => row.count),
+      datasets: [{
+        data: ordered.map((row) => Number(row.k_pct || 0) * 100),
+        backgroundColor: ordered.map((row) => (row.balls === state.count.balls && row.strikes === state.count.strikes ? "rgba(200,240,78,0.9)" : "rgba(91,143,255,0.4)")),
+        borderRadius: 2,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#5a5f72", font: { family: "DM Mono", size: 9 } }, grid: { color: "#1f2332" } },
+        y: { ticks: { color: "#5a5f72", font: { family: "DM Mono", size: 9 } }, grid: { color: "#1f2332" }, title: { display: true, text: "K%", color: "#5a5f72", font: { family: "DM Mono", size: 9 } } },
       },
     },
   });
 }
 
-function renderCountLeaderboard() {
-  const { balls, strikes, sort } = state.count;
-  const key = balls + '-' + strikes;
-  let data = lbBatting.season.map(p => {
-    const bc = batterProfiles[p.name]?.byCount[key] || {};
-    return { ...p, xwoba: bc.xwoba ?? p.xwoba, avg: bc.avg ?? p.avg, k: bc.k ?? p.k, whiff: bc.whiff ?? 22 };
-  });
-  data.sort((a,b) => b[sort]-a[sort]);
-  const maxX = Math.max(...data.map(p=>p.xwoba));
-  const tbody = document.getElementById('count-lb-body');
-  tbody.innerHTML = '';
-  data.forEach((p,i) => {
-    const pct = (p.xwoba/maxX*100).toFixed(0);
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="td-rank">${i+1}</td>
-      <td class="td-name">${p.name}</td>
-      <td class="td-stat" style="color:var(--muted)">${p.pa}</td>
-      <td class="td-stat td-highlight">${p.xwoba.toFixed(3)}</td>
-      <td class="td-stat">${p.avg.toFixed(3)}</td>
-      <td class="td-stat" style="color:var(--accent2)">${p.k.toFixed(1)}%</td>
-      <td class="td-stat" style="color:var(--muted)">${p.whiff.toFixed(1)}%</td>
-      <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div></td>
-    `;
-    tbody.appendChild(tr);
-  });
+async function renderCountPage() {
+  buildCountGrid("count-grid", state.count, renderCountPage);
+  const [matrix, zonePayload, leaderboard] = await Promise.all([
+    fetchCountMatrix(),
+    fetchCountZoneMap(),
+    fetchCountLeaderboard(),
+  ]);
+
+  const selected = state.count.balls === null || state.count.strikes === null
+    ? {
+      count: "All",
+      at_bats: matrix.reduce((sum, row) => sum + Number(row.at_bats || 0), 0),
+      k_pct: matrix.reduce((sum, row) => sum + Number(row.k_pct || 0) * Number(row.at_bats || 0), 0) / Math.max(1, matrix.reduce((sum, row) => sum + Number(row.at_bats || 0), 0)),
+      bb_pct: matrix.reduce((sum, row) => sum + Number(row.bb_pct || 0) * Number(row.at_bats || 0), 0) / Math.max(1, matrix.reduce((sum, row) => sum + Number(row.at_bats || 0), 0)),
+      avg_xwoba: matrix.reduce((sum, row) => sum + Number(row.avg_xwoba || 0) * Number(row.at_bats || 0), 0) / Math.max(1, matrix.reduce((sum, row) => sum + Number(row.at_bats || 0), 0)),
+    }
+    : matrix.find((row) => row.balls === state.count.balls && row.strikes === state.count.strikes) || { count: `${state.count.balls}-${state.count.strikes}`, at_bats: 0, k_pct: 0, bb_pct: 0, avg_xwoba: 0 };
+
+  document.getElementById("count-display").textContent = selected.count === "All" ? "All" : `${state.count.balls}–${state.count.strikes}`;
+  document.getElementById("count-meta").innerHTML = `${state.count.outs === null ? "All outs" : `${state.count.outs} out${state.count.outs === 1 ? "" : "s"}`} · Instances: <span id="count-instances">${fmtNum(selected.at_bats, 0)}</span>`;
+  document.getElementById("count-stat-cards").innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">League xwOBA</div>
+      <div class="stat-value" style="color:var(--accent)">${fmtRate(selected.avg_xwoba)}</div>
+      <div class="stat-delta">${fmtNum(selected.at_bats, 0)} tracked plate appearances</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Strikeout Rate</div>
+      <div class="stat-value" style="color:var(--accent2)">${fmtPct(selected.k_pct, 1)}</div>
+      <div class="stat-delta">final outcome after reaching this count</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Walk Rate</div>
+      <div class="stat-value" style="color:var(--accent3)">${fmtPct(selected.bb_pct, 1)}</div>
+      <div class="stat-delta">including intentional walks</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Handedness Split</div>
+      <div class="stat-value sm">${state.count.batterHand}/${state.count.pitcherHand}</div>
+      <div class="stat-delta">${activeSeasonLabel("season")}</div>
+    </div>
+  `;
+
+  buildOutcomeMatrix(matrix);
+  buildOutcomeChart(matrix);
+  buildZoneChart("count-zone", zonePayload.zones || [[0, 0, 0], [0, 0, 0], [0, 0, 0]], "accent3");
+
+  const sortField = state.count.sort;
+  const sorted = [...leaderboard].sort((a, b) => Number(b[sortField] || 0) - Number(a[sortField] || 0));
+  const maxValue = Math.max(1, ...sorted.map((row) => Number(row.xwoba || 0)));
+  document.getElementById("count-lb-title").textContent = state.count.balls === null ? "Batter Leaderboard — All Counts" : `Batter Leaderboard — ${state.count.balls}-${state.count.strikes}`;
+  document.getElementById("season-scope-label").textContent = activeSeasonLabel("season");
+  document.getElementById("count-lb-body").innerHTML = sorted.map((row, index) => `
+    <tr>
+      <td class="td-rank">${index + 1}</td>
+      <td class="td-name">${row.batter_name || row.name}</td>
+      <td class="td-stat" style="color:var(--muted)">${fmtNum(row.pa, 0)}</td>
+      <td class="td-stat td-highlight">${fmtRate(row.xwoba)}</td>
+      <td class="td-stat">${fmtRate(row.avg)}</td>
+      <td class="td-stat" style="color:var(--accent2)">${fmtPct(row.k_pct || row.k, 1)}</td>
+      <td class="td-stat" style="color:var(--muted)">${fmtPct(row.whiff_pct || 0, 1)}</td>
+      <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${(Number(row.xwoba || 0) / maxValue) * 100}%"></div></div></td>
+    </tr>
+  `).join("");
 }
 
-document.getElementById('count-outs').addEventListener('click', e => {
-  const btn = e.target.closest('.out-btn');
-  if (!btn) return;
-  document.querySelectorAll('#count-outs .out-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  state.count.outs = +btn.dataset.outs;
-  renderCountPage();
-});
+async function fetchBatterOverview() {
+  const seasonQuery = activeSeasonQuery(state.batter.window);
+  const cacheKey = `${state.batter.selectedId}:${state.batter.window}:${JSON.stringify(seasonQuery)}`;
+  if (cache.batterOverview.has(cacheKey)) return cache.batterOverview.get(cacheKey);
+  const data = await apiFetch(`/batter/${state.batter.selectedId}/overview${buildQuery(seasonQuery)}`, "batter-overview");
+  cache.batterOverview.set(cacheKey, data);
+  return data;
+}
 
-document.getElementById('count-lb-pills').addEventListener('click', e => {
-  const pill = e.target.closest('.filter-pill');
-  if (!pill) return;
-  document.querySelectorAll('#count-lb-pills .filter-pill').forEach(p => p.classList.remove('active'));
-  pill.classList.add('active');
-  state.count.sort = pill.dataset.s;
-  renderCountLeaderboard();
-});
+async function renderBatterProfile() {
+  const lookup = lookupPlayerByName("batter", document.getElementById("batter-select").value);
+  if (lookup) state.batter.selectedId = lookup.id;
+  if (!state.batter.selectedId) return;
 
-// ══════════════════════════════════════
-// BATTER PROFILE
-// ══════════════════════════════════════
-function renderBatterProfile() {
-  const name = document.getElementById('batter-select').value;
-  state.batter.selected = name;
-  const profile = batterProfiles[name];
-  if (!profile) return;
-  const d = profile[state.batter.window];
-
-  document.getElementById('batter-stat-cards').innerHTML = `
+  const profile = await fetchBatterOverview();
+  const slash = calcSlash(profile.summary);
+  document.getElementById("batter-stat-cards").innerHTML = `
     <div class="stat-card">
       <div class="stat-label">AVG / OBP / SLG</div>
-      <div class="stat-value sm" style="color:var(--accent)">${d.avg.toFixed(3)} / ${d.obp.toFixed(3)} / ${d.slg.toFixed(3)}</div>
-      <div class="stat-delta">slash line — ${state.batter.window === 'last7' ? 'last 7 games' : state.batter.window}</div>
+      <div class="stat-value sm" style="color:var(--accent)">${fmtRate(slash.avg)} / ${fmtRate(slash.obp)} / ${fmtRate(slash.slg)}</div>
+      <div class="stat-delta">${fmtNum(profile.summary.pa, 0)} PA in ${activeSeasonLabel(state.batter.window)}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">xwOBA</div>
-      <div class="stat-value" style="color:var(--accent)">${d.xwoba.toFixed(3)}</div>
-      <div class="stat-delta ${d.xwoba > 0.340 ? 'up':'down'}">${d.xwoba > 0.340 ? '↑ above':'↓ below'} .340 league avg</div>
+      <div class="stat-value" style="color:var(--accent)">${fmtRate(profile.summary.xwoba)}</div>
+      <div class="stat-delta">expected production</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">K%</div>
-      <div class="stat-value" style="color:var(--accent2)">${d.k.toFixed(1)}%</div>
-      <div class="stat-delta ${d.k < 22 ? 'up':'down'}">${d.k < 22 ? 'below':'above'} avg strikeout rate</div>
+      <div class="stat-value" style="color:var(--accent2)">${fmtPct(profile.summary.k_pct, 1)}</div>
+      <div class="stat-delta">BB% ${fmtPct(profile.summary.bb_pct, 1)}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">${state.batter.window==='career' ? 'Career HR' : state.batter.window==='season' ? 'Season HR' : 'HR (Last 7)'}</div>
-      <div class="stat-value">${d.hr}</div>
-      <div class="stat-delta">BB%: ${d.bb.toFixed(1)}%</div>
+      <div class="stat-label">Home Runs</div>
+      <div class="stat-value">${fmtNum(profile.summary.hr, 0)}</div>
+      <div class="stat-delta">${playerName("batter", state.batter.selectedId)}</div>
     </div>
   `;
 
-  buildZoneChart('batter-zone', profile.zone[state.batter.window], 'accent3');
-  buildCountGrid('batter-count-grid', state.batter, renderBatterCountStats);
-  renderBatterCountStats();
+  document.getElementById("batter-season-thead").innerHTML = `<tr><th>Season</th><th class="td-stat">PA</th><th class="td-stat">xwOBA</th><th class="td-stat">K%</th><th class="td-stat">BB%</th><th class="td-stat">HR</th></tr>`;
+  document.getElementById("batter-season-body").innerHTML = profile.seasons.map((row) => `
+    <tr>
+      <td class="td-name">${row.season}</td>
+      <td class="td-stat">${fmtNum(row.pa, 0)}</td>
+      <td class="td-stat td-highlight">${fmtRate(row.xwoba)}</td>
+      <td class="td-stat">${fmtPct(row.k_pct, 1)}</td>
+      <td class="td-stat">${fmtPct(row.bb_pct, 1)}</td>
+      <td class="td-stat">${fmtNum(row.hr, 0)}</td>
+    </tr>
+  `).join("");
+
+  buildZoneChart("batter-zone", profile.zones || [[0, 0, 0], [0, 0, 0], [0, 0, 0]], "accent3");
+  buildCountGrid("batter-count-grid", state.batter, renderBatterCountStats);
+  renderBatterCountStats(profile);
 }
 
-function renderBatterCountStats() {
-  const profile = batterProfiles[state.batter.selected];
-  if (!profile) return;
-  const key = state.batter.balls + '-' + state.batter.strikes;
-  const cd = profile.byCount[key] || profile.byCount['0-0'];
-  document.getElementById('batter-count-stats').innerHTML = `
-    <div class="cstat"><div class="cstat-val">${cd.avg.toFixed(3)}</div><div class="cstat-lbl">AVG</div></div>
-    <div class="cstat"><div class="cstat-val">${cd.xwoba.toFixed(3)}</div><div class="cstat-lbl">xwOBA</div></div>
-    <div class="cstat"><div class="cstat-val">${cd.k.toFixed(1)}%</div><div class="cstat-lbl">K%</div></div>
-    <div class="cstat"><div class="cstat-val">${cd.whiff.toFixed(1)}%</div><div class="cstat-lbl">Whiff%</div></div>
+function renderBatterCountStats(profileData = null) {
+  const render = (profile) => {
+    const selected = profile.counts.find((row) => row.balls === state.batter.balls && row.strikes === state.batter.strikes) || { pa: 0, avg: 0, xwoba: 0, k_pct: 0 };
+    document.getElementById("batter-count-stats").innerHTML = `
+      <div class="cstat"><div class="cstat-val">${fmtNum(selected.pa, 0)}</div><div class="cstat-lbl">PA</div></div>
+      <div class="cstat"><div class="cstat-val">${fmtRate(selected.avg)}</div><div class="cstat-lbl">AVG</div></div>
+      <div class="cstat"><div class="cstat-val">${fmtRate(selected.xwoba)}</div><div class="cstat-lbl">xwOBA</div></div>
+      <div class="cstat"><div class="cstat-val">${fmtPct(selected.k_pct, 1)}</div><div class="cstat-lbl">K%</div></div>
+    `;
+    buildCountGrid("batter-count-grid", state.batter, renderBatterCountStats);
+  };
+
+  if (profileData) {
+    render(profileData);
+    return;
+  }
+
+  fetchBatterOverview().then(render);
+}
+
+async function fetchPitcherOverview() {
+  const seasonQuery = activeSeasonQuery(state.pitcher.window);
+  const cacheKey = `${state.pitcher.selectedId}:${state.pitcher.window}:${JSON.stringify(seasonQuery)}`;
+  if (cache.pitcherOverview.has(cacheKey)) return cache.pitcherOverview.get(cacheKey);
+  const data = await apiFetch(`/pitcher/${state.pitcher.selectedId}/overview${buildQuery(seasonQuery)}`, "pitcher-overview");
+  cache.pitcherOverview.set(cacheKey, data);
+  return data;
+}
+
+async function renderPitcherProfile() {
+  const lookup = lookupPlayerByName("pitcher", document.getElementById("pitcher-select").value);
+  if (lookup) state.pitcher.selectedId = lookup.id;
+  if (!state.pitcher.selectedId) return;
+
+  const profile = await fetchPitcherOverview();
+  document.getElementById("pitcher-stat-cards").innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Pitches</div>
+      <div class="stat-value" style="color:var(--accent)">${fmtNum(profile.summary.pitches, 0)}</div>
+      <div class="stat-delta">${playerName("pitcher", state.pitcher.selectedId)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Velo</div>
+      <div class="stat-value" style="color:var(--accent3)">${fmtNum(profile.summary.avg_velo, 1)}</div>
+      <div class="stat-delta">Spin ${fmtNum(profile.summary.avg_spin, 0)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Whiff%</div>
+      <div class="stat-value" style="color:var(--accent2)">${fmtPct(profile.summary.whiff_pct, 1)}</div>
+      <div class="stat-delta">CSW ${fmtPct(profile.summary.csw_pct, 1)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">xwOBA Allowed</div>
+      <div class="stat-value">${fmtRate(profile.summary.xwoba_allowed)}</div>
+      <div class="stat-delta">K ${fmtPct(profile.summary.k_pct, 1)} · BB ${fmtPct(profile.summary.bb_pct, 1)}</div>
+    </div>
   `;
-  buildCountGrid('batter-count-grid', state.batter, renderBatterCountStats);
+
+  document.getElementById("pitcher-season-thead").innerHTML = `<tr><th>Season</th><th class="td-stat">Pitches</th><th class="td-stat">Velo</th><th class="td-stat">Spin</th><th class="td-stat">Whiff%</th></tr>`;
+  document.getElementById("pitcher-season-body").innerHTML = profile.seasons.map((row) => `
+    <tr>
+      <td class="td-name">${row.season}</td>
+      <td class="td-stat">${fmtNum(row.pitches, 0)}</td>
+      <td class="td-stat">${fmtNum(row.avg_velo, 1)}</td>
+      <td class="td-stat">${fmtNum(row.avg_spin, 0)}</td>
+      <td class="td-stat">${fmtPct(row.whiff_pct, 1)}</td>
+    </tr>
+  `).join("");
+
+  buildZoneChart("pitcher-zone", profile.zones || [[0, 0, 0], [0, 0, 0], [0, 0, 0]], "accent2");
+  buildCountGrid("pitcher-count-grid", state.pitcher, renderPitcherCountStats);
+  renderPitcherCountStats(profile);
 }
 
-function setBatterWindow(win, el) {
-  document.querySelectorAll('#batter-window .window-tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  state.batter.window = win;
+function renderPitcherCountStats(profileData = null) {
+  const render = (profile) => {
+    const rows = profile.counts.filter((row) => row.balls === state.pitcher.balls && row.strikes === state.pitcher.strikes);
+    const best = rows[0] || { whiff_pct: 0, avg_velo: 0 };
+    const usage = rows.slice(0, 3).map((row) => `${row.pitch_type} ${fmtPct(row.usage_pct, 0)}`).join(" · ") || "—";
+    document.getElementById("pitcher-count-stats").innerHTML = `
+      <div class="cstat"><div class="cstat-val">${fmtPct(best.whiff_pct, 1)}</div><div class="cstat-lbl">Whiff%</div></div>
+      <div class="cstat"><div class="cstat-val">${fmtNum(best.avg_velo, 1)}</div><div class="cstat-lbl">Avg Velo</div></div>
+      <div class="cstat" style="flex:1;min-width:180px"><div class="cstat-val" style="font-size:13px;font-family:var(--mono);letter-spacing:.04em;color:var(--text)">${usage}</div><div class="cstat-lbl">Pitch Mix</div></div>
+    `;
+    buildCountGrid("pitcher-count-grid", state.pitcher, renderPitcherCountStats);
+  };
+
+  if (profileData) {
+    render(profileData);
+    return;
+  }
+  fetchPitcherOverview().then(render);
+}
+
+async function renderLeaderboard() {
+  const isBatting = state.leaderboard.type === "batting";
+  const sortField = state.leaderboard.sort;
+  const seasonQuery = activeSeasonQuery(state.leaderboard.window);
+
+  let rows;
+  if (isBatting) {
+    rows = await apiFetch(`/leaderboard/batting${buildQuery({
+      ...seasonQuery,
+      limit: state.leaderboard.limit,
+      min_pa: state.leaderboard.minPa,
+      balls: state.leaderboard.balls,
+      strikes: state.leaderboard.strikes,
+      outs: state.leaderboard.outs,
+    })}`, "lb-batting");
+    rows = [...rows].sort((a, b) => Number(b[sortField] || 0) - Number(a[sortField] || 0));
+    const maxValue = Math.max(1, ...rows.map((row) => Number(row.xwoba || 0)));
+    document.getElementById("lb-thead").innerHTML = `<tr><th>#</th><th>Player</th><th class="td-stat">PA</th><th class="td-stat">xwOBA</th><th class="td-stat">AVG</th><th class="td-stat">K%</th><th class="td-stat">BB%</th><th class="td-bar-cell"></th></tr>`;
+    document.getElementById("lb-body").innerHTML = rows.map((row, index) => `
+      <tr>
+        <td class="td-rank">${index + 1}</td>
+        <td class="td-name">${row.batter_name}</td>
+        <td class="td-stat">${fmtNum(row.pa, 0)}</td>
+        <td class="td-stat td-highlight">${fmtRate(row.xwoba)}</td>
+        <td class="td-stat">${fmtRate(row.avg)}</td>
+        <td class="td-stat">${fmtPct(row.k_pct, 1)}</td>
+        <td class="td-stat">${fmtPct(row.bb_pct, 1)}</td>
+        <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${(Number(row.xwoba || 0) / maxValue) * 100}%"></div></div></td>
+      </tr>
+    `).join("");
+  } else {
+    rows = await apiFetch(`/leaderboard/stuff${buildQuery({
+      ...seasonQuery,
+      limit: state.leaderboard.limit,
+      min_pitches: 20,
+    })}`, "lb-pitching");
+    rows = [...rows].sort((a, b) => Number(b[sortField] || 0) - Number(a[sortField] || 0));
+    const maxValue = Math.max(1, ...rows.map((row) => Number(row.whiff_pct || 0)));
+    document.getElementById("lb-thead").innerHTML = `<tr><th>#</th><th>Pitcher</th><th class="td-stat">Pitch</th><th class="td-stat">Whiff%</th><th class="td-stat">CSW%</th><th class="td-stat">Velo</th><th class="td-stat">Spin</th><th class="td-bar-cell"></th></tr>`;
+    document.getElementById("lb-body").innerHTML = rows.map((row, index) => `
+      <tr>
+        <td class="td-rank">${index + 1}</td>
+        <td class="td-name">${row.pitcher_name}</td>
+        <td class="td-stat">${row.pitch_type}</td>
+        <td class="td-stat td-highlight">${fmtPct(row.whiff_pct, 1)}</td>
+        <td class="td-stat">${fmtPct(row.csw_pct, 1)}</td>
+        <td class="td-stat">${fmtNum(row.avg_velo, 1)}</td>
+        <td class="td-stat">${fmtNum(row.avg_spin, 0)}</td>
+        <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${(Number(row.whiff_pct || 0) / maxValue) * 100}%"></div></div></td>
+      </tr>
+    `).join("");
+  }
+
+  document.getElementById("lb-title").textContent = `${isBatting ? "Batting" : "Pitching"} Leaderboard — ${activeSeasonLabel(state.leaderboard.window)}`;
+  document.getElementById("lb-count-display").textContent = state.leaderboard.balls === null ? "All" : `${state.leaderboard.balls}–${state.leaderboard.strikes}`;
+  document.getElementById("lb-count-meta").textContent = state.leaderboard.balls === null ? "no count filter" : `${state.leaderboard.outs === null ? "all outs" : `${state.leaderboard.outs} outs`} filter active`;
+
+  const pills = isBatting
+    ? ["xwoba", "avg", "k_pct", "bb_pct"]
+    : ["whiff_pct", "csw_pct", "avg_velo", "avg_spin"];
+  document.getElementById("lb-pills").innerHTML = pills.map((pill) => `<div class="filter-pill${state.leaderboard.sort === pill ? " active" : ""}" onclick="setLBSort('${pill}')">${pill.toUpperCase()}</div>`).join("");
+}
+
+async function renderSequencePage() {
+  document.getElementById("seq-pitch-count").textContent = state.sequence.pitches.length;
+  document.getElementById("sequence-builder").innerHTML = state.sequence.pitches.map((pitch, index) => `<div class="filter-pill">${index + 1}. ${pitch}</div>`).join("");
+
+  const league = await apiFetch(`/sequences${buildQuery({ ...activeSeasonQuery("season"), min_occurrences: 3 })}`, "seq-league");
+  document.getElementById("sequence-league-stats").innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Top League Sequence</div>
+      <div class="stat-value sm" style="color:var(--accent)">${league[0]?.sequence || "—"}</div>
+      <div class="stat-delta">${fmtNum(league[0]?.occurrences, 0)} occurrences</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">League Whiff</div>
+      <div class="stat-value" style="color:var(--accent2)">${fmtPct(league[0]?.whiff_pct, 1)}</div>
+      <div class="stat-delta">on most common sequence</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">League K Rate</div>
+      <div class="stat-value" style="color:var(--accent3)">${fmtPct(league[0]?.k_pct, 1)}</div>
+      <div class="stat-delta">sequence-level finish rate</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Live Scope</div>
+      <div class="stat-value sm">Pitch Type</div>
+      <div class="stat-delta">using real two-pitch transitions</div>
+    </div>
+  `;
+
+  if (state.sequence.playerType !== "pitcher") {
+    document.getElementById("sequence-player-stats").innerHTML = `
+      <div class="stat-card"><div class="stat-label">Note</div><div class="stat-value sm">Pitcher View</div><div class="stat-delta">Sequencing is currently pitcher-owned in the live API.</div></div>
+    `;
+    return;
+  }
+
+  const lookup = lookupPlayerByName("pitcher", document.getElementById("seq-player-search").value);
+  if (lookup) state.sequence.selectedId = lookup.id;
+  if (!state.sequence.selectedId) return;
+
+  const playerRows = await apiFetch(`/pitcher/${state.sequence.selectedId}/sequences${buildQuery({ ...activeSeasonQuery("season"), min_occurrences: 2 })}`, "seq-player");
+  const topRows = playerRows.slice(0, 10);
+  const bottomRows = [...playerRows].sort((a, b) => Number(a.whiff_pct || 0) - Number(b.whiff_pct || 0)).slice(0, 10);
+  const top = topRows[0];
+
+  document.getElementById("sequence-player-stats").innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Pitcher</div>
+      <div class="stat-value sm" style="color:var(--accent)">${playerName("pitcher", state.sequence.selectedId)}</div>
+      <div class="stat-delta">${fmtNum(playerRows.length, 0)} tracked sequences</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Best Sequence</div>
+      <div class="stat-value sm" style="color:var(--accent2)">${top?.sequence || "—"}</div>
+      <div class="stat-delta">Whiff ${fmtPct(top?.whiff_pct, 1)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">K Rate</div>
+      <div class="stat-value" style="color:var(--accent3)">${fmtPct(top?.k_pct, 1)}</div>
+      <div class="stat-delta">top sequence finish rate</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Occurrences</div>
+      <div class="stat-value">${fmtNum(top?.occurrences, 0)}</div>
+      <div class="stat-delta">for best sequence</div>
+    </div>
+  `;
+
+  const renderTable = (rows) => rows.map((row, index) => `
+    <tr>
+      <td class="td-rank">${index + 1}</td>
+      <td class="td-name">${row.sequence}</td>
+      <td class="td-stat">${fmtPct(row.whiff_pct, 1)}</td>
+      <td class="td-stat">${fmtPct(row.k_pct, 1)}</td>
+    </tr>
+  `).join("");
+
+  document.getElementById("seq-top-thead").innerHTML = `<tr><th>#</th><th>Sequence</th><th class="td-stat">Whiff%</th><th class="td-stat">K%</th></tr>`;
+  document.getElementById("seq-top-body").innerHTML = renderTable(topRows);
+  document.getElementById("seq-bottom-thead").innerHTML = `<tr><th>#</th><th>Sequence</th><th class="td-stat">Whiff%</th><th class="td-stat">K%</th></tr>`;
+  document.getElementById("seq-bottom-body").innerHTML = renderTable(bottomRows);
+
+  document.getElementById("sequence-pitch-mix").innerHTML = topRows.slice(0, 6).map((row) => `
+    <div style="padding:16px;border:1px solid var(--border);border-radius:2px">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">${row.first_pitch} to ${row.second_pitch}</div>
+      <div style="font-size:13px;color:var(--text);line-height:1.6">Whiff ${fmtPct(row.whiff_pct, 1)} · K ${fmtPct(row.k_pct, 1)} · ${fmtNum(row.occurrences, 0)} uses</div>
+    </div>
+  `).join("");
+}
+
+function setPage(page, navEl) {
+  document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
+  if (navEl) navEl.classList.add("active");
+  document.querySelectorAll(".page-section").forEach((el) => el.classList.remove("active"));
+  document.getElementById(`page-${page}`).classList.add("active");
+  state.page = page;
+  if (page === "count") renderCountPage();
+  if (page === "batter") renderBatterProfile();
+  if (page === "pitcher") renderPitcherProfile();
+  if (page === "leaderboard") renderLeaderboard();
+  if (page === "pitch-sequence") renderSequencePage();
+}
+
+function setCountAll() {
+  state.count.balls = null;
+  state.count.strikes = null;
+  buildCountGrid("count-grid", state.count, renderCountPage);
+  renderCountPage();
+}
+
+function setCountFilter(type, value, el) {
+  const group = el.parentElement;
+  group.querySelectorAll(".out-btn").forEach((btn) => btn.classList.remove("active"));
+  el.classList.add("active");
+  if (type === "batter-hand") state.count.batterHand = value;
+  if (type === "pitcher-hand") state.count.pitcherHand = value;
+  renderCountPage();
+}
+
+function setBatterWindow(window, el) {
+  document.querySelectorAll("#batter-window .window-tab").forEach((tab) => tab.classList.remove("active"));
+  el.classList.add("active");
+  state.batter.window = window;
   renderBatterProfile();
 }
 
-// ══════════════════════════════════════
-// PITCHER PROFILE
-// ══════════════════════════════════════
-function renderPitcherProfile() {
-  const name = document.getElementById('pitcher-select').value;
-  state.pitcher.selected = name;
-  const profile = pitcherProfiles[name];
-  if (!profile) return;
-  const d = profile[state.pitcher.window];
-
-  document.getElementById('pitcher-stat-cards').innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">ERA</div>
-      <div class="stat-value" style="color:var(--accent)">${d.era.toFixed(2)}</div>
-      <div class="stat-delta ${d.era < 3.50 ? 'up':'down'}">${d.era < 3.50 ? 'elite' : 'below avg'} — ${state.pitcher.window === 'last7' ? 'last 7' : state.pitcher.window}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">FIP</div>
-      <div class="stat-value" style="color:var(--accent3)">${d.fip.toFixed(2)}</div>
-      <div class="stat-delta">WHIP: ${d.whip.toFixed(2)}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">K/9</div>
-      <div class="stat-value" style="color:var(--accent2)">${d.k9.toFixed(1)}</div>
-      <div class="stat-delta ${d.k9 > 10 ? 'up':''}">${d.k9 > 10 ? '↑ elite swing-and-miss' : 'above average'}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">BB/9</div>
-      <div class="stat-value">${d.bb9.toFixed(1)}</div>
-      <div class="stat-delta">HR/9: ${d.hr9.toFixed(1)}</div>
-    </div>
-  `;
-
-  buildZoneChart('pitcher-zone', profile.zone[state.pitcher.window], 'accent2');
-  buildCountGrid('pitcher-count-grid', state.pitcher, renderPitcherCountStats);
-  renderPitcherCountStats();
-}
-
-function renderPitcherCountStats() {
-  const profile = pitcherProfiles[state.pitcher.selected];
-  if (!profile) return;
-  const key = state.pitcher.balls + '-' + state.pitcher.strikes;
-  const cd = profile.byCount[key] || profile.byCount['0-0'];
-  document.getElementById('pitcher-count-stats').innerHTML = `
-    <div class="cstat"><div class="cstat-val">${cd.k.toFixed(1)}%</div><div class="cstat-lbl">K%</div></div>
-    <div class="cstat"><div class="cstat-val">${cd.xwoba.toFixed(3)}</div><div class="cstat-lbl">xwOBA Against</div></div>
-    <div class="cstat" style="flex:1;min-width:180px">
-      <div class="cstat-val" style="font-size:13px;font-family:var(--mono);letter-spacing:.04em;color:var(--text)">${cd.usage}</div>
-      <div class="cstat-lbl">Pitch Mix</div>
-    </div>
-  `;
-  buildCountGrid('pitcher-count-grid', state.pitcher, renderPitcherCountStats);
-}
-
-function setPitcherWindow(win, el) {
-  document.querySelectorAll('#pitcher-window .window-tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  state.pitcher.window = win;
+function setPitcherWindow(window, el) {
+  document.querySelectorAll("#pitcher-window .window-tab").forEach((tab) => tab.classList.remove("active"));
+  el.classList.add("active");
+  state.pitcher.window = window;
   renderPitcherProfile();
 }
 
-// ══════════════════════════════════════
-// LEADERBOARD
-// ══════════════════════════════════════
-const lbCountState = { balls: -1, strikes: -1 };
-
-function renderLeaderboard() {
-  const { type, window: win, balls, strikes, sort } = state.leaderboard;
-  const isBatting = type === 'batting';
-  let data = isBatting ? [...lbBatting[win]] : [...lbPitching[win]];
-
-  if (isBatting && balls !== null) {
-    const key = balls + '-' + strikes;
-    data = data.map(p => {
-      const bc = batterProfiles[p.name]?.byCount[key];
-      return bc ? { ...p, xwoba:bc.xwoba, avg:bc.avg, k:bc.k, whiff:bc.whiff } : p;
-    });
-  }
-
-  const sortField = sort || (isBatting ? 'xwoba' : 'era');
-  data.sort((a,b) => ['era','fip','whip','bb9','hr9'].includes(sortField) ? a[sortField]-b[sortField] : b[sortField]-a[sortField]);
-
-  const winLabel = {career:'Career',season:'2024 Season',last7:'Last 7 Games'}[win];
-  const countLabel = balls !== null ? ` · ${balls}-${strikes}` : '';
-  document.getElementById('lb-title').textContent = `${isBatting?'Batting':'Pitching'} Leaderboard — ${winLabel}${countLabel}`;
-  document.getElementById('lb-count-display').textContent = balls !== null ? `${balls}–${strikes}` : 'All';
-  document.getElementById('lb-count-meta').textContent = balls !== null ? `${['0 outs','1 out','2 outs'][state.leaderboard.outs]} filter active` : 'no count filter';
-
-  const pills = isBatting
-    ? ['xwoba','avg','obp','k','hr'].map(s => `<div class="filter-pill${sortField===s?' active':''}" onclick="setLBSort('${s}')">${s.toUpperCase()}</div>`).join('')
-    : ['era','fip','k9','bb9','whip'].map(s => `<div class="filter-pill${sortField===s?' active':''}" onclick="setLBSort('${s}')">${s.toUpperCase()}</div>`).join('');
-  document.getElementById('lb-pills').innerHTML = pills;
-
-  if (isBatting) {
-    document.getElementById('lb-thead').innerHTML = `<tr><th>#</th><th>Player</th><th class="td-stat">PA</th><th class="td-stat">xwOBA</th><th class="td-stat">AVG</th><th class="td-stat">OBP</th><th class="td-stat">K%</th><th class="td-stat">BB%</th><th class="td-bar-cell"></th></tr>`;
-    const maxX = Math.max(...data.map(p=>p.xwoba));
-    document.getElementById('lb-body').innerHTML = data.map((p,i) => `
-      <tr>
-        <td class="td-rank">${i+1}</td>
-        <td class="td-name">${p.name}</td>
-        <td class="td-stat" style="color:var(--muted)">${p.pa}</td>
-        <td class="td-stat td-highlight">${p.xwoba.toFixed(3)}</td>
-        <td class="td-stat">${p.avg.toFixed(3)}</td>
-        <td class="td-stat">${p.obp.toFixed(3)}</td>
-        <td class="td-stat" style="color:var(--accent2)">${p.k.toFixed(1)}%</td>
-        <td class="td-stat">${p.bb.toFixed(1)}%</td>
-        <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${(p.xwoba/maxX*100).toFixed(0)}%"></div></div></td>
-      </tr>`).join('');
-  } else {
-    document.getElementById('lb-thead').innerHTML = `<tr><th>#</th><th>Pitcher</th><th class="td-stat">IP</th><th class="td-stat">ERA</th><th class="td-stat">FIP</th><th class="td-stat">K/9</th><th class="td-stat">BB/9</th><th class="td-stat">WHIP</th><th class="td-bar-cell"></th></tr>`;
-    const maxEra = Math.max(...data.map(p=>p.era));
-    const minEra = Math.min(...data.map(p=>p.era));
-    document.getElementById('lb-body').innerHTML = data.map((p,i) => `
-      <tr>
-        <td class="td-rank">${i+1}</td>
-        <td class="td-name">${p.name}</td>
-        <td class="td-stat" style="color:var(--muted)">${p.ip}</td>
-        <td class="td-stat td-highlight">${p.era.toFixed(2)}</td>
-        <td class="td-stat" style="color:var(--accent3)">${p.fip.toFixed(2)}</td>
-        <td class="td-stat" style="color:var(--accent2)">${p.k9.toFixed(1)}</td>
-        <td class="td-stat">${p.bb9.toFixed(1)}</td>
-        <td class="td-stat">${p.whip.toFixed(2)}</td>
-        <td class="td-bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:${((maxEra-p.era)/(maxEra-minEra)*100).toFixed(0)}%"></div></div></td>
-      </tr>`).join('');
-  }
-}
-
 function setLBType(type, el) {
-  document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('active'));
-  el.classList.add('active');
+  document.querySelectorAll(".type-btn").forEach((btn) => btn.classList.remove("active"));
+  el.classList.add("active");
   state.leaderboard.type = type;
-  state.leaderboard.sort = type === 'batting' ? 'xwoba' : 'era';
+  state.leaderboard.sort = type === "batting" ? "xwoba" : "whiff_pct";
   renderLeaderboard();
 }
 
-function setLBWindow(win, el) {
-  document.querySelectorAll('#lb-window .window-tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  state.leaderboard.window = win;
+function setLBWindow(window, el) {
+  document.querySelectorAll("#lb-window .window-tab").forEach((tab) => tab.classList.remove("active"));
+  el.classList.add("active");
+  state.leaderboard.window = window;
   renderLeaderboard();
 }
 
-function setLBSort(s) {
-  state.leaderboard.sort = s;
+function setLBSort(sortField) {
+  state.leaderboard.sort = sortField;
   renderLeaderboard();
 }
 
 function clearLBCount() {
   state.leaderboard.balls = null;
   state.leaderboard.strikes = null;
-  lbCountState.balls = -1;
-  lbCountState.strikes = -1;
-  buildCountGrid('lb-count-grid', lbCountState, onLBCountSelect);
+  buildCountGrid("lb-count-grid", state.leaderboard, () => {
+    renderLeaderboard();
+  });
   renderLeaderboard();
 }
 
-function onLBCountSelect() {
-  state.leaderboard.balls = lbCountState.balls;
-  state.leaderboard.strikes = lbCountState.strikes;
+function clearLBOuts() {
+  state.leaderboard.outs = null;
+  document.querySelectorAll("#lb-outs .out-btn").forEach((btn) => btn.classList.remove("active"));
   renderLeaderboard();
 }
 
-document.getElementById('lb-outs').addEventListener('click', e => {
-  const btn = e.target.closest('.out-btn');
-  if (!btn) return;
-  document.querySelectorAll('#lb-outs .out-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  state.leaderboard.outs = +btn.dataset.outs;
-  renderLeaderboard();
+function addSequencePitch(result) {
+  if (state.sequence.pitches.length < 25) {
+    state.sequence.pitches.push(result);
+    renderSequencePage();
+  }
+}
+
+function clearSequence() {
+  state.sequence.pitches = [];
+  renderSequencePage();
+}
+
+function updateSequencePlayer() {
+  renderSequencePage();
+}
+
+function toggleSequenceType() {
+  state.sequence.playerType = document.getElementById("seq-type-toggle").value;
+  renderSequencePage();
+}
+
+async function refreshData() {
+  cache.countMatrix = null;
+  cache.batterOverview.clear();
+  cache.pitcherOverview.clear();
+  await loadMetaContext();
+  if (state.page === "batter") await renderBatterProfile();
+  if (state.page === "pitcher") await renderPitcherProfile();
+  if (state.page === "leaderboard") await renderLeaderboard();
+  if (state.page === "pitch-sequence") await renderSequencePage();
+  await renderCountPage();
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadMetaContext();
+
+  buildCountGrid("count-grid", state.count, renderCountPage);
+  buildCountGrid("lb-count-grid", state.leaderboard, () => {
+    renderLeaderboard();
+  });
+
+  document.getElementById("scope-mode").addEventListener("change", () => {
+    syncScopeControls();
+    refreshData();
+  });
+
+  document.getElementById("count-outs").addEventListener("click", (event) => {
+    const button = event.target.closest(".out-btn");
+    if (!button) return;
+    document.querySelectorAll("#count-outs .out-btn").forEach((btn) => btn.classList.remove("active"));
+    button.classList.add("active");
+    state.count.outs = button.dataset.outs === "all" ? null : Number(button.dataset.outs);
+    renderCountPage();
+  });
+
+  document.getElementById("count-lb-pills").addEventListener("click", (event) => {
+    const pill = event.target.closest(".filter-pill");
+    if (!pill) return;
+    document.querySelectorAll("#count-lb-pills .filter-pill").forEach((node) => node.classList.remove("active"));
+    pill.classList.add("active");
+    state.count.sort = pill.dataset.s === "k" ? "k_pct" : pill.dataset.s === "whiff" ? "whiff_pct" : pill.dataset.s;
+    renderCountPage();
+  });
+
+  document.getElementById("lb-outs").addEventListener("click", (event) => {
+    const button = event.target.closest(".out-btn");
+    if (!button) return;
+    document.querySelectorAll("#lb-outs .out-btn").forEach((btn) => btn.classList.remove("active"));
+    button.classList.add("active");
+    state.leaderboard.outs = Number(button.dataset.outs);
+    renderLeaderboard();
+  });
+
+  ["lb-limit", "lb-season", "lb-season-start", "lb-season-end", "lb-min-pa"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", () => {
+      state.leaderboard.limit = Number(document.getElementById("lb-limit").value) || 10;
+      state.leaderboard.season = selectedSeason();
+      state.leaderboard.minPa = Number(document.getElementById("lb-min-pa").value) || 25;
+      syncScopeControls();
+      refreshData();
+    });
+  });
+
+  await renderCountPage();
 });
-
-// ══════════════════════════════════════
-// PAGE NAV
-// ══════════════════════════════════════
-function setPage(page, navEl) {
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  navEl.classList.add('active');
-  document.querySelectorAll('.page-section').forEach(el => el.classList.remove('active'));
-  document.getElementById('page-' + page).classList.add('active');
-  state.page = page;
-  if (page === 'batter')      renderBatterProfile();
-  if (page === 'pitcher')     renderPitcherProfile();
-  if (page === 'leaderboard') renderLeaderboard();
-}
-
-// ══════════════════════════════════════
-// INIT
-// ══════════════════════════════════════
-buildCountGrid('count-grid', state.count, renderCountPage);
-buildCountGrid('lb-count-grid', lbCountState, onLBCountSelect);
-renderCountPage();

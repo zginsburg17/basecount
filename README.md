@@ -100,15 +100,15 @@ Interactive docs available at `http://localhost:8000/docs`.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/count-state/batter-splits` | Batter splits for a specific count (`balls`, `strikes`, optional `outs`, `base_state`, `season`, `min_pa`) |
-| GET | `/api/count-state/outcome-matrix` | Full count × outcome probability matrix |
+| GET | `/api/count-state/batter-splits` | Batter splits for a specific count (`balls`, `strikes`, optional `outs`, `base_state`, `season` or `season_start` + `season_end`, `min_pa`) |
+| GET | `/api/count-state/outcome-matrix` | Full count × outcome probability matrix (`season` or `season_start` + `season_end`) |
 | GET | `/api/pitcher/{pitcher_id}/count-profile` | Pitch mix by count for a given pitcher |
 | GET | `/api/pitcher/{pitcher_id}/sequences` | Most common pitch-to-pitch sequences |
 | GET | `/api/pitcher/{pitcher_id}/splits` | Situational splits (base state, handedness, etc.) |
 | GET | `/api/batter/{batter_id}/splits` | Situational splits for a batter |
 | GET | `/api/at-bat/{game_pk}/{at_bat_number}` | Full pitch-by-pitch timeline of one at-bat |
-| GET | `/api/leaderboard/batting` | Season batting leaderboard (`season`, `limit`, `min_pa`) |
-| GET | `/api/leaderboard/stuff` | Pitch quality leaderboard (`season`, `pitch_type`, `min_pitches`) |
+| GET | `/api/leaderboard/batting` | Batting leaderboard (`season` or `season_start` + `season_end`, `limit`, `min_pa`) |
+| GET | `/api/leaderboard/stuff` | Pitch quality leaderboard (`season` or `season_start` + `season_end`, `pitch_type`, `min_pitches`) |
 
 ---
 
@@ -132,11 +132,19 @@ Features:
 pip install -r requirements.txt
 
 # 2. Initialize the database and load recent data
-python etl/pipeline.py
+python etl/pipeline.py recent
 
-# To backfill a full season (runs in weekly chunks, ~3 s delay between each):
-# python -c "from etl.pipeline import init_db, backfill_season, enrich_players; \
-#             con = init_db(); backfill_season(con, 2024); enrich_players(con)"
+# Backfill one season
+python etl/pipeline.py season --season 2025
+
+# Backfill a season range
+python etl/pipeline.py range --season-start 2016 --season-end 2025
+
+# Backfill the full Statcast era
+python etl/pipeline.py all-history
+
+# Inspect what is already loaded
+python etl/pipeline.py status
 
 # 3. Start the API
 uvicorn api.main:app --reload --port 8000

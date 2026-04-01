@@ -166,6 +166,29 @@
     <div class="logo">Base<span>Count</span></div>
     <div class="tagline">// Statcast Analytics Platform</div>
     <div class="topbar-right">
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Data Scope</label>
+          <select id="scope-mode" class="player-select" style="min-width:110px">
+            <option value="single">Single Season</option>
+            <option value="range">Season Range</option>
+          </select>
+        </div>
+        <div id="single-season-wrap" style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Season</label>
+          <input type="number" id="lb-season" value="2026" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+        </div>
+        <div id="range-season-wrap" style="display:none;gap:10px;align-items:flex-end">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">From</label>
+            <input type="number" id="lb-season-start" value="2015" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">To</label>
+            <input type="number" id="lb-season-end" value="2026" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+          </div>
+        </div>
+      </div>
       <div class="live-dot"></div>
       <button onclick="refreshData()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:2px;cursor:pointer;font-family:var(--mono);font-size:11px;transition:all 0.2s" title="Refresh API data">↻ Refresh</button>
     </div>
@@ -275,8 +298,8 @@
             <input type="number" id="lb-limit" value="10" min="5" max="50" style="width:60px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Season</label>
-            <input type="number" id="lb-season" value="2024" min="2015" max="2030" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Scope</label>
+            <div id="season-scope-label" style="min-width:120px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px">2026</div>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
             <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Min PA</label>
@@ -654,7 +677,7 @@
   </main>
 </div>
 
-<script>
+<script type="text/plain" data-disabled="legacy-dashboard">
 // ══════════════════════════════════════
 // STATE
 // ══════════════════════════════════════
@@ -1764,5 +1787,6 @@ buildCountGrid('count-grid', state.count, renderCountPage);
 buildCountGrid('lb-count-grid', lbCountState, onLBCountSelect);
 renderCountPage();
 </script>
+<script src="./dashboard.js"></script>
 </body>
 </html>
