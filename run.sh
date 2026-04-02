@@ -34,6 +34,7 @@ Usage: ./run.sh <mode> [args]
 General:
   ./run.sh api
   ./run.sh all
+  ./run.sh ensure-history
   ./run.sh status
   ./run.sh enrich
 
@@ -42,11 +43,12 @@ ETL:
   ./run.sh season <year> [chunk_days]
   ./run.sh range <start_year> <end_year> [chunk_days]
   ./run.sh all-history [chunk_days]
+  ./run.sh ensure-history [chunk_days]
 
 Legacy aliases:
   ./run.sh etl        -> ./run.sh recent
   ./run.sh api        -> start API only
-  ./run.sh all        -> recent ETL then start API
+  ./run.sh all        -> ensure full history then start API
 EOF
 }
 
@@ -94,6 +96,12 @@ case "$MODE" in
         run_etl all-history --chunk-days "$CHUNK_DAYS"
         ;;
 
+    ensure-history)
+        CHUNK_DAYS="${2:-7}"
+        echo "Ensuring full Statcast history is loaded..."
+        run_etl ensure-history --chunk-days "$CHUNK_DAYS"
+        ;;
+
     enrich)
         echo "Enriching player metadata..."
         run_etl enrich
@@ -115,9 +123,9 @@ case "$MODE" in
         ;;
 
     all)
-        DAYS="${2:-7}"
-        echo "Loading recent Statcast data (${DAYS} days)..."
-        run_etl recent --days "$DAYS"
+        CHUNK_DAYS="${2:-7}"
+        echo "Ensuring full Statcast history is loaded..."
+        run_etl ensure-history --chunk-days "$CHUNK_DAYS"
         echo ""
         echo "Starting API server on http://localhost:8000 ..."
         python api/main.py

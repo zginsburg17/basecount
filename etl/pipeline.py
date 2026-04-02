@@ -537,14 +537,83 @@ def loaded_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
     ]
 
 
+def expected_statcast_seasons(current_year: Optional[int] = None) -> list[int]:
+    return available_statcast_seasons(current_year=current_year)
+
+
+def missing_statcast_seasons(
+    con: duckdb.DuckDBPyConnection,
+    current_year: Optional[int] = None,
+) -> list[int]:
+    loaded = set(loaded_seasons(con))
+    expected = expected_statcast_seasons(current_year=current_year)
+    return [season for season in expected if season not in loaded]
+
+
+def player_name_coverage(con: duckdb.DuckDBPyConnection) -> dict:
+    total_players, named_players, unnamed_players, team_players = con.execute(
+        """
+        SELECT
+            COUNT(*) AS total_players,
+            COUNT(*) FILTER (WHERE full_name IS NOT NULL) AS named_players,
+            COUNT(*) FILTER (WHERE full_name IS NULL) AS unnamed_players,
+            COUNT(*) FILTER (WHERE team IS NOT NULL) AS team_players
+        FROM players
+        """
+    ).fetchone()
+
+    return {
+        "total_players": total_players or 0,
+        "named_players": named_players or 0,
+        "unnamed_players": unnamed_players or 0,
+        "team_players": team_players or 0,
+    }
+
+
+def verify_history_coverage(
+    con: duckdb.DuckDBPyConnection,
+    current_year: Optional[int] = None,
+) -> dict:
+    expected = expected_statcast_seasons(current_year=current_year)
+    loaded = loaded_seasons(con)
+    missing = [season for season in expected if season not in set(loaded)]
+
+    return {
+        "expected_seasons": expected,
+        "loaded_seasons": loaded,
+        "missing_seasons": missing,
+        "history_complete": len(missing) == 0,
+    }
+
+
+def ensure_full_history(
+    con: duckdb.DuckDBPyConnection,
+    chunk_days: int = 7,
+) -> dict:
+    coverage = verify_history_coverage(con)
+    missing = coverage["missing_seasons"]
+
+    if missing:
+        log.info(f"Missing historical seasons detected: {missing}")
+        for season in missing:
+            backfill_season(con, season=season, chunk_days=chunk_days)
+    else:
+        log.info("Full historical season coverage already present.")
+
+    enrich_players(con)
+    coverage = verify_history_coverage(con)
+    coverage["players_status"] = player_name_coverage(con)
+    return coverage
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load Statcast data into DuckDB.")
     parser.add_argument(
         "mode",
         nargs="?",
         default="recent",
-        choices=["recent", "season", "range", "all-history", "enrich", "status"],
-        help="Load recent data, one season, a season range, all history, enrich names, or inspect DB status.",
+        choices=["recent", "season", "range", "all-history", "ensure-history", "enrich", "status"],
+        help="Load recent data, one season, a season range, all history, ensure full history, enrich names, or inspect DB status.",
     )
     parser.add_argument("--db-path", default="baseball.duckdb", help="DuckDB database path.")
     parser.add_argument("--season", type=int, help="Single season to backfill.")
@@ -603,11 +672,29 @@ if __name__ == "__main__":
         if not args.skip_enrich:
             enrich_players(con)
 
+    elif args.mode == "ensure-history":
+        coverage = ensure_full_history(con, chunk_days=args.chunk_days)
+        if not coverage["history_complete"]:
+            raise SystemExit(
+                f"Historical coverage is still incomplete. Missing seasons: {coverage['missing_seasons']}"
+            )
+        if not coverage["players_status"]["named_players"] == coverage["players_status"]["total_players"]:
+            raise SystemExit(
+                "Player name coverage is incomplete after enrichment. "
+                f"Coverage: {coverage['players_status']}"
+            )
+
     elif args.mode == "enrich":
         enrich_players(con)
 
     elif args.mode == "status":
-        seasons = loaded_seasons(con)
+        coverage = verify_history_coverage(con)
+        seasons = coverage["loaded_seasons"]
         latest = con.execute("SELECT MIN(game_date), MAX(game_date), COUNT(*) FROM pitches").fetchone()
+        name_coverage = player_name_coverage(con)
         log.info(f"Loaded seasons: {seasons}")
+        log.info(f"Expected seasons: {coverage['expected_seasons']}")
+        log.info(f"Missing seasons: {coverage['missing_seasons']}")
+        log.info(f"History complete: {coverage['history_complete']}")
         log.info(f"Date span / rows: {latest}")
+        log.info(f"Player name coverage: {name_coverage}")
