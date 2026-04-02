@@ -8,9 +8,12 @@ import duckdb
 import pandas as pd
 from pybaseball import statcast, playerid_reverse_lookup
 from datetime import date, datetime, timedelta
+import json
 import logging
 import time
 from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -158,6 +161,16 @@ CREATE TABLE IF NOT EXISTS ingestion_log (
     status      VARCHAR(20),
     run_at      TIMESTAMP DEFAULT current_timestamp
 );
+
+CREATE TABLE IF NOT EXISTS season_backfill_status (
+    season              INTEGER PRIMARY KEY,
+    expected_start_date DATE NOT NULL,
+    expected_end_date   DATE NOT NULL,
+    loaded_rows         BIGINT DEFAULT 0,
+    completed           BOOLEAN DEFAULT FALSE,
+    completed_at        TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 
@@ -252,6 +265,89 @@ def build_at_bat_rollup(pitches_df: pd.DataFrame) -> pd.DataFrame:
 # Player enrichment
 # ---------------------------------------------------------------------------
 
+def resolve_player_names(
+    player_ids: list[int],
+    batch_size: int = 500,
+    retry_delay: float = 1.0,
+) -> dict[int, str]:
+    """
+    Resolve MLBAM player IDs to names.
+
+    Strategy:
+      1. Try the requested batch size.
+      2. If a batch errors, split it into smaller batches.
+      3. Continue splitting until individual IDs.
+
+    This is much more resilient than losing an entire large batch on a single
+    transient lookup failure.
+    """
+    resolved: dict[int, str] = {}
+
+    def _lookup(ids: list[int], size: int) -> None:
+        if not ids:
+            return
+
+        for start in range(0, len(ids), size):
+            chunk = ids[start : start + size]
+            try:
+                result = playerid_reverse_lookup(chunk, key_type="mlbam")
+                if result is not None and not result.empty:
+                    for _, row in result.iterrows():
+                        pid = int(row["key_mlbam"])
+                        full = f"{row['name_first'].strip().title()} {row['name_last'].strip().title()}"
+                        resolved[pid] = full
+                time.sleep(retry_delay)
+            except Exception as exc:
+                if len(chunk) == 1:
+                    log.warning(f"playerid_reverse_lookup failed for player {chunk[0]}: {exc}")
+                else:
+                    next_size = max(1, len(chunk) // 2)
+                    log.warning(
+                        f"playerid_reverse_lookup failed for batch starting at {start} "
+                        f"(size {len(chunk)}). Retrying in smaller chunks of {next_size}. Error: {exc}"
+                    )
+                    _lookup(chunk, next_size)
+
+    _lookup(player_ids, max(1, batch_size))
+    return resolved
+
+
+def lookup_player_profile_via_mlb_api(player_id: int) -> Optional[dict]:
+    url = f"https://statsapi.mlb.com/api/v1/people/{player_id}"
+    request = Request(url, headers={"User-Agent": "basecount/1.0"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        log.warning(f"MLB Stats API lookup failed for player {player_id}: {exc}")
+        return None
+
+    people = payload.get("people") or []
+    if not people:
+        return None
+
+    person = people[0]
+    return {
+        "full_name": person.get("fullName"),
+        "bats": (person.get("batSide") or {}).get("code"),
+        "throws": (person.get("pitchHand") or {}).get("code"),
+        "position": (person.get("primaryPosition") or {}).get("abbreviation"),
+    }
+
+
+def resolve_player_profiles_via_mlb_api(
+    player_ids: list[int],
+    delay: float = 0.1,
+) -> dict[int, dict]:
+    resolved: dict[int, dict] = {}
+    for player_id in player_ids:
+        profile = lookup_player_profile_via_mlb_api(player_id)
+        if profile:
+            resolved[player_id] = profile
+        time.sleep(delay)
+    return resolved
+
+
 def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int:
     """
     Fill in full_name, bats, throws, position, and team for player stubs
@@ -274,25 +370,9 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
 
     log.info(f"Enriching {len(stub_ids)} player stubs...")
 
-    # --- Lookup names via pybaseball in batches ---
-    name_frames = []
-    for i in range(0, len(stub_ids), batch_size):
-        chunk = stub_ids[i : i + batch_size]
-        try:
-            result = playerid_reverse_lookup(chunk, key_type="mlbam")
-            if result is not None and not result.empty:
-                name_frames.append(result)
-        except Exception as e:
-            log.warning(f"playerid_reverse_lookup failed for batch {i}: {e}")
-        time.sleep(1)
-
-    name_map = {}  # player_id -> full_name
-    if name_frames:
-        names_df = pd.concat(name_frames, ignore_index=True)
-        for _, row in names_df.iterrows():
-            pid = int(row["key_mlbam"])
-            full = f"{row['name_first'].strip().title()} {row['name_last'].strip().title()}"
-            name_map[pid] = full
+    name_map = resolve_player_names(stub_ids, batch_size=batch_size)
+    unresolved_ids = [pid for pid in stub_ids if pid not in name_map]
+    fallback_profiles = resolve_player_profiles_via_mlb_api(unresolved_ids) if unresolved_ids else {}
 
     # --- Derive bats, throws, position, team from pitch data ---
     enrichment = con.execute("""
@@ -339,20 +419,36 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
         pid = int(row["player_id"])
         if pid not in stub_ids:
             continue
-        full_name = name_map.get(pid)
+        fallback_profile = fallback_profiles.get(pid, {})
+        full_name = name_map.get(pid) or fallback_profile.get("full_name")
         con.execute("""
             UPDATE players SET
                 full_name = COALESCE(?, full_name),
-                bats      = COALESCE(?, bats),
-                throws    = COALESCE(?, throws),
-                position  = COALESCE(?, position),
+                bats      = COALESCE(?, ?, bats),
+                throws    = COALESCE(?, ?, throws),
+                position  = COALESCE(?, ?, position),
                 team      = COALESCE(?, team),
                 updated_at = current_timestamp
             WHERE player_id = ?
-        """, [full_name, row.get("bats"), row.get("throws"), row.get("position"), row.get("team"), pid])
+        """, [
+            full_name,
+            row.get("bats"), fallback_profile.get("bats"),
+            row.get("throws"), fallback_profile.get("throws"),
+            row.get("position"), fallback_profile.get("position"),
+            row.get("team"),
+            pid,
+        ])
         updated += 1
 
-    log.info(f"  Players enriched: {updated} (names resolved: {len(name_map)})")
+    unresolved = max(len(stub_ids) - len(name_map), 0)
+    fallback_resolved = sum(1 for profile in fallback_profiles.values() if profile.get("full_name"))
+    total_resolved = len(name_map) + fallback_resolved
+    unresolved = max(len(stub_ids) - total_resolved, 0)
+    log.info(
+        f"  Players enriched: {updated} "
+        f"(names resolved via pybaseball: {len(name_map)}, "
+        f"via MLB Stats API: {fallback_resolved}, unresolved: {unresolved})"
+    )
     return updated
 
 
@@ -365,6 +461,74 @@ def init_db(db_path: str = "baseball.duckdb") -> duckdb.DuckDBPyConnection:
     con.execute(SCHEMA_SQL)
     log.info(f"Database initialized at {db_path}")
     return con
+
+
+def next_ingestion_run_id(con: duckdb.DuckDBPyConnection) -> int:
+    run_id = con.execute(
+        "SELECT COALESCE(MAX(run_id), 0) + 1 FROM ingestion_log"
+    ).fetchone()[0]
+    return int(run_id)
+
+
+def mark_season_backfill_started(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    expected_start_date: date,
+    expected_end_date: date,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO season_backfill_status (
+            season,
+            expected_start_date,
+            expected_end_date,
+            loaded_rows,
+            completed,
+            completed_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, 0, FALSE, NULL, current_timestamp)
+        ON CONFLICT(season) DO UPDATE SET
+            expected_start_date = excluded.expected_start_date,
+            expected_end_date = excluded.expected_end_date,
+            loaded_rows = 0,
+            completed = FALSE,
+            completed_at = NULL,
+            updated_at = current_timestamp
+        """,
+        [season, expected_start_date, expected_end_date],
+    )
+
+
+def mark_season_backfill_complete(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    expected_start_date: date,
+    expected_end_date: date,
+    loaded_rows: int,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO season_backfill_status (
+            season,
+            expected_start_date,
+            expected_end_date,
+            loaded_rows,
+            completed,
+            completed_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, TRUE, current_timestamp, current_timestamp)
+        ON CONFLICT(season) DO UPDATE SET
+            expected_start_date = excluded.expected_start_date,
+            expected_end_date = excluded.expected_end_date,
+            loaded_rows = excluded.loaded_rows,
+            completed = TRUE,
+            completed_at = current_timestamp,
+            updated_at = current_timestamp
+        """,
+        [season, expected_start_date, expected_end_date, loaded_rows],
+    )
 
 
 def load_date_range(
@@ -437,10 +601,11 @@ def load_date_range(
     log.info(f"  At-bats upserted: {len(ab_df)}")
 
     # --- Log run ---
+    run_id = next_ingestion_run_id(con)
     con.execute("""
-        INSERT INTO ingestion_log (start_date, end_date, rows_loaded, status)
-        VALUES (?, ?, ?, 'success')
-    """, [start_date, end_date, len(pitches_df)])
+        INSERT INTO ingestion_log (run_id, start_date, end_date, rows_loaded, status)
+        VALUES (?, ?, ?, ?, 'success')
+    """, [run_id, start_date, end_date, len(pitches_df)])
 
     return len(pitches_df)
 
@@ -481,6 +646,7 @@ def backfill_season(
     Typical MLB season: late March → late September.
     """
     season_start, season_end = season_bounds(season)
+    mark_season_backfill_started(con, season, season_start, season_end)
     current = season_start
     total = 0
 
@@ -497,6 +663,7 @@ def backfill_season(
             time.sleep(delay_between_chunks)
 
     log.info(f"Season {season} backfill complete. Total pitches: {total:,}")
+    mark_season_backfill_complete(con, season, season_start, season_end, total)
     return total
 
 
@@ -533,6 +700,20 @@ def loaded_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
         row[0]
         for row in con.execute(
             "SELECT DISTINCT season FROM pitches WHERE season IS NOT NULL ORDER BY season"
+        ).fetchall()
+    ]
+
+
+def completed_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
+    return [
+        row[0]
+        for row in con.execute(
+            """
+            SELECT season
+            FROM season_backfill_status
+            WHERE completed = TRUE
+            ORDER BY season
+            """
         ).fetchall()
     ]
 
@@ -576,12 +757,16 @@ def verify_history_coverage(
 ) -> dict:
     expected = expected_statcast_seasons(current_year=current_year)
     loaded = loaded_seasons(con)
-    missing = [season for season in expected if season not in set(loaded)]
+    completed = completed_seasons(con)
+    missing = [season for season in expected if season not in set(completed)]
+    incomplete = [season for season in loaded if season not in set(completed)]
 
     return {
         "expected_seasons": expected,
         "loaded_seasons": loaded,
+        "completed_seasons": completed,
         "missing_seasons": missing,
+        "incomplete_seasons": incomplete,
         "history_complete": len(missing) == 0,
     }
 
@@ -693,8 +878,10 @@ if __name__ == "__main__":
         latest = con.execute("SELECT MIN(game_date), MAX(game_date), COUNT(*) FROM pitches").fetchone()
         name_coverage = player_name_coverage(con)
         log.info(f"Loaded seasons: {seasons}")
+        log.info(f"Completed seasons: {coverage['completed_seasons']}")
         log.info(f"Expected seasons: {coverage['expected_seasons']}")
         log.info(f"Missing seasons: {coverage['missing_seasons']}")
+        log.info(f"Incomplete seasons: {coverage['incomplete_seasons']}")
         log.info(f"History complete: {coverage['history_complete']}")
         log.info(f"Date span / rows: {latest}")
         log.info(f"Player name coverage: {name_coverage}")

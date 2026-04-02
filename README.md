@@ -130,7 +130,7 @@ Internet access is required because:
 
 - `run.sh` installs Python dependencies
 - the ETL downloads Statcast data through `pybaseball`
-- player-name enrichment uses online lookups
+- player-name enrichment uses online lookups from both `pybaseball` and the MLB Stats API fallback
 
 ## Supported Data Modes
 
@@ -156,6 +156,11 @@ BaseCount currently supports the following data-loading modes:
 
 - `status`
   Reports what data is currently loaded in the DuckDB database.
+
+Important:
+
+- a season is only considered complete after a full season backfill finishes successfully
+- partial data for a season does not count as complete history coverage
 
 ## Standard Workflow
 
@@ -257,6 +262,7 @@ Run:
 This command reports:
 
 - the list of loaded seasons
+- the list of completed seasons
 - the earliest game date in the database
 - the latest game date in the database
 - a total row count summary
@@ -377,7 +383,9 @@ Use this when:
 The status output now also reports:
 
 - expected seasons
+- completed seasons
 - missing seasons
+- incomplete seasons
 - whether full historical coverage is complete
 - player-name coverage counts
 
@@ -677,7 +685,7 @@ If names remain incomplete:
 
 1. verify internet access
 2. run the enrichment again
-3. accept that some unresolved IDs may still temporarily appear as fallback labels
+3. note that the system now tries both `pybaseball` and the MLB Stats API before leaving a player unresolved
 
 ### Problem: the dashboard opens but is blank
 

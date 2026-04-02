@@ -4,9 +4,12 @@ Serves analytics data as JSON for the frontend dashboard.
 """
 
 from datetime import date, timedelta
+import json
 import os
 import sys
 from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import duckdb
 import pandas as pd
@@ -88,11 +91,25 @@ def history_completeness(con: duckdb.DuckDBPyConnection) -> dict:
     context = latest_data_context(con)
     loaded = context["seasons"]
     expected = expected_statcast_seasons()
-    missing = [season for season in expected if season not in set(loaded)]
+    completed = [
+        row[0]
+        for row in con.execute(
+            """
+            SELECT season
+            FROM season_backfill_status
+            WHERE completed = TRUE
+            ORDER BY season DESC
+            """
+        ).fetchall()
+    ]
+    missing = [season for season in expected if season not in set(completed)]
+    incomplete = [season for season in loaded if season not in set(completed)]
     return {
         "expected_seasons": expected,
         "loaded_seasons": loaded,
+        "completed_seasons": completed,
         "missing_seasons": missing,
+        "incomplete_seasons": incomplete,
         "history_complete": len(missing) == 0,
     }
 
@@ -286,7 +303,26 @@ def lookup_player_names(player_ids: list[int]) -> dict[int, str]:
     for pid in missing_ids:
         PLAYER_NAME_CACHE.setdefault(pid, None)
 
+    still_missing = [pid for pid in missing_ids if not PLAYER_NAME_CACHE.get(pid)]
+    for pid in still_missing:
+        PLAYER_NAME_CACHE[pid] = lookup_player_name_via_mlb_api(pid)
+
     return {pid: PLAYER_NAME_CACHE[pid] for pid in player_ids if PLAYER_NAME_CACHE.get(pid)}
+
+
+def lookup_player_name_via_mlb_api(player_id: int) -> Optional[str]:
+    url = f"https://statsapi.mlb.com/api/v1/people/{player_id}"
+    request = Request(url, headers={"User-Agent": "basecount/1.0"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return None
+
+    people = payload.get("people") or []
+    if not people:
+        return None
+    return people[0].get("fullName")
 
 
 def inject_player_names(records: list[dict], *, id_key: str, name_key: str) -> list[dict]:
