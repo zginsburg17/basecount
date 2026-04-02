@@ -10,6 +10,7 @@ The system is designed to support:
 - multi-season range analysis
 - pitch-by-pitch count-state analysis
 - handedness and outs filtering
+- regular season vs postseason filtering
 - batter, pitcher, leaderboard, and sequence views
 
 Statcast pitch-level support begins in `2015`, so the historical coverage standard for this project starts with the `2015` season and extends through the current season. As of April 2, 2026, that expected range is `2015-2026`.
@@ -139,6 +140,9 @@ BaseCount currently supports the following data-loading modes:
 - `recent`
   Loads only a recent window of data. This is useful for refreshing current-season data, but it is not a historical backfill.
 
+- `current-season-update`
+  Loads a short rolling window for the active season and is intended for scheduled daily refreshes.
+
 - `season`
   Loads a single season.
 
@@ -151,6 +155,12 @@ BaseCount currently supports the following data-loading modes:
 - `ensure-history`
   Verifies that every supported Statcast season from `2015` through the current season is present, backfills any missing seasons, reruns player enrichment, and fails if player-name coverage is still incomplete.
 
+- `export-season`
+  Exports one season from DuckDB into a reusable Parquet bundle on disk.
+
+- `import-season`
+  Imports a previously exported Parquet season bundle into DuckDB without calling the Statcast API again.
+
 - `enrich`
   Fills in missing player metadata such as names, handedness, position, and team when possible.
 
@@ -161,6 +171,8 @@ Important:
 
 - a season is only considered complete after a full season backfill finishes successfully
 - partial data for a season does not count as complete history coverage
+- spring training is excluded from ingestion
+- regular season and postseason are retained
 
 ## Standard Workflow
 
@@ -414,6 +426,23 @@ Optional example:
 ./run.sh recent 7
 ```
 
+### `./run.sh current-season-update [days]`
+
+Updates the current season using a short rolling date window.
+
+Example:
+
+```bash
+./run.sh current-season-update
+./run.sh current-season-update 2
+```
+
+Recommended use:
+
+- run this once each morning
+- use `2` days instead of `1` day as a small safety buffer
+- follow it with the API or dashboard as needed
+
 ### `./run.sh season <year>`
 
 Loads a single season.
@@ -461,6 +490,42 @@ Example:
 ./run.sh ensure-history
 ```
 
+### `./run.sh export-season <year> [export_root]`
+
+Exports a season from your local DuckDB database into a reusable Parquet bundle.
+
+Example:
+
+```bash
+./run.sh export-season 2015
+./run.sh export-season 2016 season_exports
+```
+
+This creates a folder like:
+
+```text
+exports/season=2015/
+├── pitches.parquet
+├── at_bats.parquet
+├── games.parquet
+├── players.parquet
+└── metadata.json
+```
+
+This is the recommended way to avoid repeatedly pulling the same season from the Statcast API.
+
+### `./run.sh import-season <bundle_dir>`
+
+Imports a previously exported season bundle into DuckDB.
+
+Example:
+
+```bash
+./run.sh import-season exports/season=2015
+```
+
+This allows you to rebuild or move a database using local Parquet files instead of live API pulls.
+
 ### `./run.sh all`
 
 Ensures the full required historical range is loaded and then starts the API.
@@ -477,6 +542,8 @@ python etl/pipeline.py season --season 2025
 python etl/pipeline.py range --season-start 2018 --season-end 2025
 python etl/pipeline.py all-history
 python etl/pipeline.py ensure-history
+python etl/pipeline.py export-season --season 2015 --export-root exports
+python etl/pipeline.py import-season --import-dir exports/season=2015
 python etl/pipeline.py enrich
 python etl/pipeline.py status
 ```
@@ -538,6 +605,12 @@ At the top of the dashboard, select either:
 - `Single Season`
 - `Season Range`
 
+You can also select the season type:
+
+- `Regular Season`
+- `Postseason`
+- `Both`
+
 Use `Single Season` when you want one year only.
 
 Use `Season Range` when you want multiple years together.
@@ -546,6 +619,8 @@ Important:
 
 - the dashboard can only query seasons that are actually loaded in the database
 - if a season is not loaded, filtering to that season will not produce meaningful results
+- spring training data is intentionally excluded from the dataset
+- postseason data is retained and can be filtered separately from regular season
 
 Always verify available data with:
 
@@ -744,8 +819,7 @@ open dashboard/dashboard.html
 For normal ongoing use:
 
 ```bash
-./run.sh recent
-./run.sh enrich
+./run.sh current-season-update 2
 ./run.sh api
 open dashboard/dashboard.html
 ```

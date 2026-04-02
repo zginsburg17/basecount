@@ -44,6 +44,8 @@ WALK_EVENTS = ("walk", "intent_walk")
 STRIKEOUT_EVENTS = ("strikeout", "strikeout_double_play")
 AB_EXCLUDED_EVENTS = ("walk", "intent_walk", "hit_by_pitch", "sac_fly", "sac_bunt", "catcher_interf")
 PLAYER_NAME_CACHE: dict[int, Optional[str]] = {}
+REGULAR_SEASON_GAME_TYPES = ("R",)
+POSTSEASON_GAME_TYPES = ("F", "D", "L", "W")
 
 
 def get_con():
@@ -206,6 +208,16 @@ def sql_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def season_type_to_game_types(season_type: Optional[str]) -> Optional[list[str]]:
+    if season_type is None or season_type == "both":
+        return list(REGULAR_SEASON_GAME_TYPES + POSTSEASON_GAME_TYPES)
+    if season_type == "regular":
+        return list(REGULAR_SEASON_GAME_TYPES)
+    if season_type == "postseason":
+        return list(POSTSEASON_GAME_TYPES)
+    raise HTTPException(status_code=400, detail="season_type must be one of: regular, postseason, both")
+
+
 def build_filters(
     alias: str,
     *,
@@ -221,6 +233,7 @@ def build_filters(
     base_state: Optional[str] = None,
     stand: Optional[str] = None,
     p_throws: Optional[str] = None,
+    game_types: Optional[list[str]] = None,
     player_col: Optional[str] = None,
     player_id: Optional[int] = None,
     pitch_type: Optional[str] = None,
@@ -250,6 +263,9 @@ def build_filters(
         filters.append(f"{alias}.stand = {sql_quote(stand)}")
     if p_throws is not None:
         filters.append(f"{alias}.p_throws = {sql_quote(p_throws)}")
+    if game_types:
+        quoted = ", ".join(sql_quote(game_type) for game_type in game_types)
+        filters.append(f"{alias}.game_type IN ({quoted})")
     if player_col is not None and player_id is not None:
         filters.append(f"{alias}.{player_col} = {player_id}")
     if pitch_type is not None:
@@ -487,6 +503,7 @@ def api_count_state_splits(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     min_pa: int = Query(10, ge=1),
     stand: Optional[str] = None,
     p_throws: Optional[str] = None,
@@ -494,6 +511,7 @@ def api_count_state_splits(
     """Batter performance in a specific count situation."""
     con = get_con()
     resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     df = count_state_splits(
         con,
         balls,
@@ -506,6 +524,7 @@ def api_count_state_splits(
         p_throws=normalize_hand(p_throws),
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
+        game_types=game_types,
     )
     records = inject_player_names(df_to_json(df), id_key="batter_id", name_key="batter_name")
     return {"count": f"{balls}-{strikes}", "results": records}
@@ -516,6 +535,7 @@ def api_outcome_matrix(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
     stand: Optional[str] = None,
     p_throws: Optional[str] = None,
@@ -523,6 +543,7 @@ def api_outcome_matrix(
     """Full count-state outcome probability matrix."""
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     stand = normalize_hand(stand)
     p_throws = normalize_hand(p_throws)
     where_sql = build_filters(
@@ -534,6 +555,7 @@ def api_outcome_matrix(
         end_date=resolved["end_date"],
         stand=stand,
         p_throws=p_throws,
+        game_types=game_types,
     )
     df = con.execute(
         f"""
@@ -572,12 +594,14 @@ def api_count_zone_map(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
     stand: Optional[str] = None,
     p_throws: Optional[str] = None,
 ):
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     where_sql = build_filters(
         "p",
         season=resolved["season"],
@@ -591,6 +615,7 @@ def api_count_zone_map(
         outs=outs,
         stand=normalize_hand(stand),
         p_throws=normalize_hand(p_throws),
+        game_types=game_types,
     )
     rows = con.execute(
         f"""
@@ -615,10 +640,12 @@ def api_batter_overview(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
 ):
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     where_sql = build_filters(
         "ab",
         season=resolved["season"],
@@ -626,6 +653,7 @@ def api_batter_overview(
         season_end=resolved["season_end"],
         start_date=resolved["start_date"],
         end_date=resolved["end_date"],
+        game_types=game_types,
         player_col="batter_id",
         player_id=batter_id,
     )
@@ -644,6 +672,7 @@ def api_batter_overview(
             SUM(CASE WHEN ab.final_event = 'home_run' THEN 1 ELSE 0 END) AS hr
         FROM at_bats ab
         WHERE ab.batter_id = {batter_id}
+          AND ab.game_type IN ({', '.join(sql_quote(game_type) for game_type in game_types)})
         GROUP BY ab.season
         ORDER BY ab.season DESC
         """
@@ -657,7 +686,7 @@ def api_batter_overview(
                 p.balls,
                 p.strikes
             FROM pitches p
-            WHERE {build_filters('p', season=resolved['season'], season_start=resolved['season_start'], season_end=resolved['season_end'], start_date=resolved['start_date'], end_date=resolved['end_date'], player_col='batter_id', player_id=batter_id)}
+            WHERE {build_filters('p', season=resolved['season'], season_start=resolved['season_start'], season_end=resolved['season_end'], start_date=resolved['start_date'], end_date=resolved['end_date'], game_types=game_types, player_col='batter_id', player_id=batter_id)}
         )
         SELECT
             cp.balls,
@@ -683,7 +712,7 @@ def api_batter_overview(
                 0
             )::INTEGER AS contact_rate
         FROM pitches p
-        WHERE {build_filters('p', season=resolved['season'], season_start=resolved['season_start'], season_end=resolved['season_end'], start_date=resolved['start_date'], end_date=resolved['end_date'], player_col='batter_id', player_id=batter_id)}
+        WHERE {build_filters('p', season=resolved['season'], season_start=resolved['season_start'], season_end=resolved['season_end'], start_date=resolved['start_date'], end_date=resolved['end_date'], game_types=game_types, player_col='batter_id', player_id=batter_id)}
           AND zone BETWEEN 1 AND 9
         GROUP BY zone
         ORDER BY zone
@@ -704,10 +733,12 @@ def api_pitcher_overview(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
 ):
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     pitch_where = build_filters(
         "p",
         season=resolved["season"],
@@ -715,6 +746,7 @@ def api_pitcher_overview(
         season_end=resolved["season_end"],
         start_date=resolved["start_date"],
         end_date=resolved["end_date"],
+        game_types=game_types,
         player_col="pitcher_id",
         player_id=pitcher_id,
     )
@@ -733,6 +765,7 @@ def api_pitcher_overview(
             ROUND(SUM(CASE WHEN p.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS whiff_pct
         FROM pitches p
         WHERE p.pitcher_id = {pitcher_id}
+          AND p.game_type IN ({', '.join(sql_quote(game_type) for game_type in game_types)})
         GROUP BY p.season
         ORDER BY p.season DESC
         """
@@ -789,16 +822,19 @@ def api_pitcher_count_profile(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
 ):
     """Pitch mix by count for a given pitcher."""
     con = get_con()
     resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     df = pitcher_count_profile(
         con,
         pitcher_id,
         resolved["season"],
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
+        game_types=game_types,
     )
     return df_to_json(df)
 
@@ -810,9 +846,11 @@ def api_sequences(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
 ):
     con = get_con()
     resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     df = pitch_sequence_patterns(
         con,
         pitcher_id,
@@ -820,6 +858,7 @@ def api_sequences(
         resolved["season"],
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
+        game_types=game_types,
     )
     return df_to_json(df)
 
@@ -831,10 +870,12 @@ def api_pitcher_sequences(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
 ):
     """Most common pitch-to-pitch sequences for a pitcher."""
     con = get_con()
     resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     df = pitch_sequence_patterns(
         con,
         pitcher_id,
@@ -842,6 +883,7 @@ def api_pitcher_sequences(
         resolved["season"],
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
+        game_types=game_types,
     )
     return df_to_json(df)
 
@@ -853,9 +895,11 @@ def api_pitcher_splits(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
 ):
     con = get_con()
     resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     df = situational_splits(
         con,
         pitcher_id,
@@ -864,6 +908,7 @@ def api_pitcher_splits(
         season=resolved["season"],
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
+        game_types=game_types,
     )
     return df_to_json(df)
 
@@ -875,9 +920,11 @@ def api_batter_splits(
     season: Optional[int] = None,
     season_start: Optional[int] = Query(None, ge=2015),
     season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
 ):
     con = get_con()
     resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
     df = situational_splits(
         con,
         batter_id,
@@ -886,6 +933,7 @@ def api_batter_splits(
         season=resolved["season"],
         season_start=resolved["season_start"],
         season_end=resolved["season_end"],
+        game_types=game_types,
     )
     return df_to_json(df)
 
@@ -915,6 +963,7 @@ def api_batting_leaderboard(
     season_end: Optional[int] = Query(None, ge=2015),
     limit: int = Query(10, ge=1, le=100),
     min_pa: int = Query(10, ge=1),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
     balls: Optional[int] = Query(None, ge=0, le=3),
     strikes: Optional[int] = Query(None, ge=0, le=2),
@@ -925,6 +974,7 @@ def api_batting_leaderboard(
     """Top batters leaderboard for a given season or window."""
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
 
     if balls is None or strikes is None:
         if (
@@ -932,8 +982,9 @@ def api_batting_leaderboard(
             and resolved["season"] is not None
             and resolved["season_start"] == resolved["season_end"]
             and outs is None and stand is None and p_throws is None
+            and season_type == "both"
         ):
-            df = batting_leaderboard(con, resolved["season"], limit, min_pa)
+            df = batting_leaderboard(con, resolved["season"], limit, min_pa, game_types=game_types)
             return inject_player_names(df_to_json(df), id_key="batter_id", name_key="batter_name")
 
         where_sql = build_filters(
@@ -947,6 +998,7 @@ def api_batting_leaderboard(
             outs=outs,
             stand=normalize_hand(stand),
             p_throws=normalize_hand(p_throws),
+            game_types=game_types,
         )
         df = con.execute(
             f"""
@@ -982,6 +1034,7 @@ def api_batting_leaderboard(
         outs=outs,
         stand=normalize_hand(stand),
         p_throws=normalize_hand(p_throws),
+        game_types=game_types,
     )
 
     df = con.execute(
@@ -1020,15 +1073,17 @@ def api_stuff_leaderboard(
     season_end: Optional[int] = Query(None, ge=2015),
     pitch_type: Optional[str] = None,
     min_pitches: int = Query(20, ge=1),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
     limit: int = Query(10, ge=1, le=100),
 ):
     """Pitch quality leaderboard proxied from whiff rate + velo + movement."""
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
 
-    if window == "season" and resolved["season"] is not None and resolved["season_start"] == resolved["season_end"]:
-        df = stuff_plus_proxy(con, resolved["season"], pitch_type, min_pitches).head(limit)
+    if window == "season" and resolved["season"] is not None and resolved["season_start"] == resolved["season_end"] and season_type == "both":
+        df = stuff_plus_proxy(con, resolved["season"], pitch_type, min_pitches, game_types=game_types).head(limit)
         return inject_player_names(df_to_json(df), id_key="pitcher_id", name_key="pitcher_name")
 
     where_sql = build_filters(
@@ -1038,6 +1093,7 @@ def api_stuff_leaderboard(
         season_end=resolved["season_end"],
         start_date=resolved["start_date"],
         end_date=resolved["end_date"],
+        game_types=game_types,
         pitch_type=pitch_type,
     )
     df = con.execute(

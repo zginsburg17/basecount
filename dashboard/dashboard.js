@@ -6,7 +6,7 @@ const state = {
   pitcher: { selectedId: null, window: "season", balls: 0, strikes: 0 },
   leaderboard: { type: "batting", window: "season", balls: null, strikes: null, outs: null, sort: "xwoba", limit: 10, season: null, minPa: 25 },
   sequence: { pitches: [], playerType: "pitcher", selectedId: null },
-  scope: { mode: "single", season: null, seasonStart: null, seasonEnd: null },
+  scope: { mode: "single", season: null, seasonStart: null, seasonEnd: null, seasonType: "both" },
   season: null,
   latestGameDate: null,
   earliestSeason: null,
@@ -201,17 +201,18 @@ function selectedSeasonEnd() {
 
 function activeSeasonQuery(windowName = "season") {
   const mode = document.getElementById("scope-mode")?.value || state.scope.mode;
+  const seasonType = document.getElementById("season-type")?.value || state.scope.seasonType || "both";
   if (windowName === "last7" || windowName === "career") {
-    return { window: windowName };
+    return { window: windowName, season_type: seasonType };
   }
 
   if (mode === "range") {
     const start = Math.min(selectedSeasonStart(), selectedSeasonEnd());
     const end = Math.max(selectedSeasonStart(), selectedSeasonEnd());
-    return { window: "season", season_start: start, season_end: end };
+    return { window: "season", season_start: start, season_end: end, season_type: seasonType };
   }
 
-  return { window: "season", season: selectedSeason() };
+  return { window: "season", season: selectedSeason(), season_type: seasonType };
 }
 
 function activeSeasonLabel(windowName = "season") {
@@ -250,6 +251,7 @@ async function loadMetaContext() {
     state.scope.season = context.latest_season;
     state.scope.seasonStart = context.earliest_season;
     state.scope.seasonEnd = context.latest_season;
+    state.scope.seasonType = "both";
   }
 
   const seasonInputs = ["lb-season", "lb-season-start", "lb-season-end"];
@@ -260,6 +262,7 @@ async function loadMetaContext() {
   });
 
   document.getElementById("scope-mode").value = state.scope.mode;
+  document.getElementById("season-type").value = state.scope.seasonType || "both";
   document.getElementById("lb-season").value = state.scope.season || context.latest_season;
   document.getElementById("lb-season-start").value = state.scope.seasonStart || context.earliest_season;
   document.getElementById("lb-season-end").value = state.scope.seasonEnd || context.latest_season;
@@ -919,7 +922,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderLeaderboard();
   });
 
-  ["lb-limit", "lb-season", "lb-season-start", "lb-season-end", "lb-min-pa"].forEach((id) => {
+  ["lb-limit", "lb-season", "lb-season-start", "lb-season-end", "lb-min-pa", "season-type"].forEach((id) => {
     document.getElementById(id).addEventListener("change", () => {
       state.leaderboard.limit = Number(document.getElementById("lb-limit").value) || 10;
       state.leaderboard.season = selectedSeason();
@@ -927,6 +930,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       state.scope.season = selectedSeason();
       state.scope.seasonStart = selectedSeasonStart();
       state.scope.seasonEnd = selectedSeasonEnd();
+      state.scope.seasonType = document.getElementById("season-type").value || "both";
       syncScopeControls();
       refreshData();
     });

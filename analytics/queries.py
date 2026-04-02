@@ -9,6 +9,20 @@ import pandas as pd
 from typing import Optional
 
 
+def game_type_filter_sql(alias: str, game_types: Optional[list[str]] = None) -> str:
+    if not game_types:
+        return ""
+    quoted = ", ".join(f"'{game_type}'" for game_type in game_types)
+    return f" AND {alias}.game_type IN ({quoted})"
+
+
+def game_type_in_sql(column: str, game_types: Optional[list[str]] = None) -> str:
+    if not game_types:
+        return ""
+    quoted = ", ".join(f"'{game_type}'" for game_type in game_types)
+    return f"{column} IN ({quoted})"
+
+
 # ---------------------------------------------------------------------------
 # Count State Analysis
 # ---------------------------------------------------------------------------
@@ -25,6 +39,7 @@ def count_state_splits(
     p_throws: Optional[str] = None,
     season_start: Optional[int] = None,
     season_end: Optional[int] = None,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     For a given count (and optionally outs + base state), return batter
@@ -49,6 +64,8 @@ def count_state_splits(
         filters.append(f"p.stand = '{stand}'")
     if p_throws is not None:
         filters.append(f"p.p_throws = '{p_throws}'")
+    if game_types:
+        filters.append(game_type_in_sql("p.game_type", game_types))
 
     where = " AND ".join(filters)
 
@@ -105,6 +122,7 @@ def pitcher_count_profile(
     season: Optional[int] = None,
     season_start: Optional[int] = None,
     season_end: Optional[int] = None,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     For a given pitcher, show pitch mix and location tendencies broken out
@@ -112,14 +130,16 @@ def pitcher_count_profile(
     when ahead vs. behind.
     """
     if season is not None:
-        season_filter = f"AND season = {season}"
+        parts = [f"season = {season}"]
     else:
         parts = []
         if season_start is not None:
             parts.append(f"season >= {season_start}")
         if season_end is not None:
             parts.append(f"season <= {season_end}")
-        season_filter = "".join(f" AND {part}" for part in parts)
+    if game_types:
+        parts.append(game_type_in_sql("game_type", game_types))
+    season_filter = "".join(f" AND {part}" for part in parts)
 
     return con.execute(f"""
         SELECT
@@ -143,6 +163,7 @@ def pitcher_count_profile(
         WHERE pitcher_id = {pitcher_id}
           AND pitch_type IS NOT NULL
           {season_filter}
+          {game_type_filter_sql('pitches', game_types)}
         GROUP BY balls, strikes, pitch_type
         ORDER BY balls, strikes, pitches DESC
     """).df()
@@ -153,19 +174,25 @@ def at_bat_outcome_by_count(
     season: Optional[int] = None,
     season_start: Optional[int] = None,
     season_end: Optional[int] = None,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Return a full count-state matrix showing outcome distributions.
     Useful for visualizing how outcome probabilities shift as the count changes.
     """
     if season is not None:
-        season_filter = f"WHERE season = {season}"
+        filters = [f"season = {season}"]
+        if game_types:
+            filters.append(game_type_in_sql("game_type", game_types))
+        season_filter = f"WHERE {' AND '.join(filters)}"
     else:
         filters = []
         if season_start is not None:
             filters.append(f"season >= {season_start}")
         if season_end is not None:
             filters.append(f"season <= {season_end}")
+        if game_types:
+            filters.append(game_type_in_sql("game_type", game_types))
         season_filter = f"WHERE {' AND '.join(filters)}" if filters else ""
 
     return con.execute(f"""
@@ -201,6 +228,7 @@ def pitch_sequence_patterns(
     season: Optional[int] = None,
     season_start: Optional[int] = None,
     season_end: Optional[int] = None,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Identify common 2-pitch and 3-pitch sequences and their outcomes.
@@ -209,13 +237,18 @@ def pitch_sequence_patterns(
     """
     pid_filter  = f"AND pitcher_id = {pitcher_id}" if pitcher_id else ""
     if season is not None:
-        seas_filter = f"AND season = {season}"
+        parts = [f"season = {season}"]
+        if game_types:
+            parts.append(game_type_in_sql("game_type", game_types))
+        seas_filter = "".join(f" AND {part}" for part in parts)
     else:
         parts = []
         if season_start is not None:
             parts.append(f"season >= {season_start}")
         if season_end is not None:
             parts.append(f"season <= {season_end}")
+        if game_types:
+            parts.append(game_type_in_sql("game_type", game_types))
         seas_filter = "".join(f" AND {part}" for part in parts)
 
     return con.execute(f"""
@@ -265,6 +298,7 @@ def situational_splits(
     season: Optional[int] = None,
     season_start: Optional[int] = None,
     season_end: Optional[int] = None,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Generic situational split builder. Returns xwOBA and outcome rates
@@ -272,13 +306,18 @@ def situational_splits(
     """
     id_col      = "batter_id" if role == "batter" else "pitcher_id"
     if season is not None:
-        seas_filter = f"AND season = {season}"
+        parts = [f"season = {season}"]
+        if game_types:
+            parts.append(game_type_in_sql("game_type", game_types))
+        seas_filter = "".join(f" AND {part}" for part in parts)
     else:
         parts = []
         if season_start is not None:
             parts.append(f"season >= {season_start}")
         if season_end is not None:
             parts.append(f"season <= {season_end}")
+        if game_types:
+            parts.append(game_type_in_sql("game_type", game_types))
         seas_filter = "".join(f" AND {part}" for part in parts)
 
     return con.execute(f"""
@@ -339,6 +378,7 @@ def batting_leaderboard(
     season: int,
     limit: int = 10,
     min_pa: int = 100,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Return top batters leaderboard ranked by xwOBA for a given season.
@@ -361,6 +401,7 @@ def batting_leaderboard(
         FROM at_bats ab
         LEFT JOIN players pl ON pl.player_id = ab.batter_id
         WHERE ab.season = {season}
+          {game_type_filter_sql('ab', game_types)}
         GROUP BY ab.batter_id, pl.full_name
         HAVING COUNT(DISTINCT ab.at_bat_id) >= {min_pa}
         ORDER BY xwoba DESC
@@ -373,6 +414,7 @@ def stuff_plus_proxy(
     season: int,
     pitch_type: Optional[str] = None,
     min_pitches: int = 100,
+    game_types: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Proxy for Stuff+ using whiff rate, velocity, and movement.
@@ -398,6 +440,7 @@ def stuff_plus_proxy(
         LEFT JOIN players pl ON pl.player_id = p.pitcher_id
         WHERE p.season = {season}
           AND p.pitch_type IS NOT NULL
+          {game_type_filter_sql('p', game_types)}
           {pt_filter}
         GROUP BY p.pitcher_id, pl.full_name, p.pitch_type
         HAVING COUNT(*) >= {min_pitches}

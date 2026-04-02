@@ -10,6 +10,7 @@ from pybaseball import statcast, playerid_reverse_lookup
 from datetime import date, datetime, timedelta
 import json
 import logging
+from pathlib import Path
 import time
 from typing import Optional
 from urllib.error import HTTPError, URLError
@@ -19,6 +20,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 STATCAST_START_SEASON = 2015
+REGULAR_SEASON_GAME_TYPES = ("R",)
+POSTSEASON_GAME_TYPES = ("F", "D", "L", "W")
+SUPPORTED_GAME_TYPES = REGULAR_SEASON_GAME_TYPES + POSTSEASON_GAME_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +47,7 @@ CREATE TABLE IF NOT EXISTS games (
     home_team     VARCHAR(5),
     away_team     VARCHAR(5),
     venue         VARCHAR(100),
+    game_type     VARCHAR(2),
     season        INTEGER
 );
 
@@ -75,6 +80,7 @@ CREATE TABLE IF NOT EXISTS pitches (
     -- Pitch physical characteristics
     pitch_type            VARCHAR(5),            -- FF, SL, CH, CU, SI, FC, etc.
     pitch_name            VARCHAR(30),
+    game_type             VARCHAR(2),
     release_speed         FLOAT,
     release_spin_rate     FLOAT,
     release_extension     FLOAT,
@@ -145,6 +151,7 @@ CREATE TABLE IF NOT EXISTS at_bats (
 
     final_event     VARCHAR(50),               -- outcome of AB
     final_pitch_type VARCHAR(5),
+    game_type       VARCHAR(2),
     xwoba           FLOAT,
     woba_value      FLOAT,
 
@@ -219,6 +226,17 @@ def clean_statcast(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def filter_supported_games(df: pd.DataFrame) -> pd.DataFrame:
+    if "game_type" not in df.columns:
+        return df
+
+    filtered = df[df["game_type"].isin(SUPPORTED_GAME_TYPES)].copy()
+    removed = len(df) - len(filtered)
+    if removed:
+        log.info(f"  Excluded {removed:,} spring-training or unsupported rows by game_type")
+    return filtered
+
+
 def build_at_bat_rollup(pitches_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate pitch-level data into at_bats rows."""
     groups = []
@@ -251,6 +269,7 @@ def build_at_bat_rollup(pitches_df: pd.DataFrame) -> pd.DataFrame:
             "reached_full":    ((ab_sorted["balls"] >= 3) & (ab_sorted["strikes"] >= 2)).any(),
             "final_event":     last.get("events"),
             "final_pitch_type":last.get("pitch_type"),
+            "game_type":       first.get("game_type"),
             "xwoba":           last.get("estimated_woba_using_speedangle"),
             "woba_value":      last.get("woba_value"),
             "game_date":       first["game_date"],
@@ -459,6 +478,9 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
 def init_db(db_path: str = "baseball.duckdb") -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(db_path)
     con.execute(SCHEMA_SQL)
+    con.execute("ALTER TABLE games ADD COLUMN IF NOT EXISTS game_type VARCHAR")
+    con.execute("ALTER TABLE pitches ADD COLUMN IF NOT EXISTS game_type VARCHAR")
+    con.execute("ALTER TABLE at_bats ADD COLUMN IF NOT EXISTS game_type VARCHAR")
     log.info(f"Database initialized at {db_path}")
     return con
 
@@ -476,6 +498,7 @@ def mark_season_backfill_started(
     expected_start_date: date,
     expected_end_date: date,
 ) -> None:
+    now = datetime.now()
     con.execute(
         """
         INSERT INTO season_backfill_status (
@@ -487,16 +510,16 @@ def mark_season_backfill_started(
             completed_at,
             updated_at
         )
-        VALUES (?, ?, ?, 0, FALSE, NULL, current_timestamp)
+        VALUES (?, ?, ?, 0, FALSE, NULL, ?)
         ON CONFLICT(season) DO UPDATE SET
             expected_start_date = excluded.expected_start_date,
             expected_end_date = excluded.expected_end_date,
             loaded_rows = 0,
             completed = FALSE,
             completed_at = NULL,
-            updated_at = current_timestamp
+            updated_at = excluded.updated_at
         """,
-        [season, expected_start_date, expected_end_date],
+        [season, expected_start_date, expected_end_date, now],
     )
 
 
@@ -507,6 +530,7 @@ def mark_season_backfill_complete(
     expected_end_date: date,
     loaded_rows: int,
 ) -> None:
+    now = datetime.now()
     con.execute(
         """
         INSERT INTO season_backfill_status (
@@ -518,16 +542,16 @@ def mark_season_backfill_complete(
             completed_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, TRUE, current_timestamp, current_timestamp)
+        VALUES (?, ?, ?, ?, TRUE, ?, ?)
         ON CONFLICT(season) DO UPDATE SET
             expected_start_date = excluded.expected_start_date,
             expected_end_date = excluded.expected_end_date,
             loaded_rows = excluded.loaded_rows,
             completed = TRUE,
-            completed_at = current_timestamp,
-            updated_at = current_timestamp
+            completed_at = excluded.completed_at,
+            updated_at = excluded.updated_at
         """,
-        [season, expected_start_date, expected_end_date, loaded_rows],
+        [season, expected_start_date, expected_end_date, loaded_rows, now, now],
     )
 
 
@@ -551,6 +575,10 @@ def load_date_range(
 
     log.info(f"  Raw rows fetched: {len(raw)}")
     df = clean_statcast(raw)
+    df = filter_supported_games(df)
+    if df.empty:
+        log.warning("No regular-season or postseason data returned for this range.")
+        return 0
 
     # --- Load players (must come before pitches due to FK constraint) ---
     player_ids = pd.concat([
@@ -562,11 +590,13 @@ def load_date_range(
     log.info(f"  Players upserted: {len(player_ids)}")
 
     # --- Load games (must come before pitches due to FK constraint) ---
-    game_cols = [c for c in ["game_pk", "game_date", "home_team", "away_team"] if c in df.columns]
+    game_cols = [c for c in ["game_pk", "game_date", "home_team", "away_team", "game_type"] if c in df.columns]
     games_df = df[game_cols].drop_duplicates("game_pk").copy()
     games_df["venue"] = None
     games_df["season"] = pd.to_datetime(games_df["game_date"]).dt.year
-    con.execute("INSERT OR REPLACE INTO games (game_pk, game_date, home_team, away_team, venue, season) SELECT game_pk, game_date, home_team, away_team, venue, season FROM games_df")
+    if "game_type" not in games_df.columns:
+        games_df["game_type"] = None
+    con.execute("INSERT OR REPLACE INTO games (game_pk, game_date, home_team, away_team, venue, game_type, season) SELECT game_pk, game_date, home_team, away_team, venue, game_type, season FROM games_df")
     log.info(f"  Games upserted: {len(games_df)}")
 
     # --- Load pitches ---
@@ -576,7 +606,7 @@ def load_date_range(
         "stand", "p_throws",
         "inning", "inning_half", "outs_when_up", "balls", "strikes",
         "on_1b", "on_2b", "on_3b", "base_state",
-        "pitch_type", "pitch_name",
+        "pitch_type", "pitch_name", "game_type",
         "release_speed", "release_spin_rate", "release_extension",
         "release_pos_x", "release_pos_z",
         "pfx_x", "pfx_z", "plate_x", "plate_z", "sz_top", "sz_bot",
@@ -791,14 +821,116 @@ def ensure_full_history(
     return coverage
 
 
+def current_season_update(
+    con: duckdb.DuckDBPyConnection,
+    days: int = 2,
+) -> None:
+    today = date.today()
+    start = today - timedelta(days=max(days - 1, 0))
+    load_date_range(
+        con,
+        start_date=start.strftime("%Y-%m-%d"),
+        end_date=today.strftime("%Y-%m-%d"),
+    )
+    enrich_players(con)
+
+
+def export_season_bundle(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    export_root: str = "exports",
+) -> Path:
+    export_dir = Path(export_root) / f"season={season}"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    pitches_path = export_dir / "pitches.parquet"
+    at_bats_path = export_dir / "at_bats.parquet"
+    games_path = export_dir / "games.parquet"
+    players_path = export_dir / "players.parquet"
+    metadata_path = export_dir / "metadata.json"
+
+    con.execute(
+        f"COPY (SELECT * FROM pitches WHERE season = {season}) TO '{pitches_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM at_bats WHERE season = {season}) TO '{at_bats_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM games WHERE season = {season}) TO '{games_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"""
+        COPY (
+            SELECT DISTINCT pl.*
+            FROM players pl
+            WHERE pl.player_id IN (
+                SELECT pitcher_id FROM pitches WHERE season = {season}
+                UNION
+                SELECT batter_id FROM pitches WHERE season = {season}
+            )
+        ) TO '{players_path.as_posix()}' (FORMAT PARQUET)
+        """
+    )
+
+    metadata = {
+        "season": season,
+        "exported_at": datetime.now().isoformat(),
+        "files": {
+            "pitches": pitches_path.name,
+            "at_bats": at_bats_path.name,
+            "games": games_path.name,
+            "players": players_path.name,
+        },
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+    log.info(f"Exported season {season} to {export_dir}")
+    return export_dir
+
+
+def import_season_bundle(
+    con: duckdb.DuckDBPyConnection,
+    import_dir: str,
+) -> None:
+    bundle_dir = Path(import_dir)
+    if not bundle_dir.exists():
+        raise SystemExit(f"Import directory does not exist: {bundle_dir}")
+
+    pitches_path = bundle_dir / "pitches.parquet"
+    at_bats_path = bundle_dir / "at_bats.parquet"
+    games_path = bundle_dir / "games.parquet"
+    players_path = bundle_dir / "players.parquet"
+
+    required = [pitches_path, at_bats_path, games_path, players_path]
+    missing_files = [path for path in required if not path.exists()]
+    if missing_files:
+        raise SystemExit(f"Import bundle is incomplete. Missing files: {missing_files}")
+
+    con.execute(f"INSERT OR REPLACE INTO players SELECT * FROM read_parquet('{players_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO games SELECT * FROM read_parquet('{games_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO pitches SELECT * FROM read_parquet('{pitches_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO at_bats SELECT * FROM read_parquet('{at_bats_path.as_posix()}')")
+    log.info(f"Imported season bundle from {bundle_dir}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load Statcast data into DuckDB.")
     parser.add_argument(
         "mode",
         nargs="?",
         default="recent",
-        choices=["recent", "season", "range", "all-history", "ensure-history", "enrich", "status"],
-        help="Load recent data, one season, a season range, all history, ensure full history, enrich names, or inspect DB status.",
+        choices=[
+            "recent",
+            "season",
+            "range",
+            "all-history",
+            "ensure-history",
+            "current-season-update",
+            "export-season",
+            "import-season",
+            "enrich",
+            "status",
+        ],
+        help="Load recent data, one season, a season range, all history, ensure full history, update the current season, export a season bundle, import a season bundle, enrich names, or inspect DB status.",
     )
     parser.add_argument("--db-path", default="baseball.duckdb", help="DuckDB database path.")
     parser.add_argument("--season", type=int, help="Single season to backfill.")
@@ -806,6 +938,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--season-end", type=int, help="Last season in a range.")
     parser.add_argument("--chunk-days", type=int, default=7, help="Chunk size for backfills.")
     parser.add_argument("--days", type=int, default=7, help="Days of recent data to ingest in recent mode.")
+    parser.add_argument("--export-root", default="exports", help="Directory for exported season bundles.")
+    parser.add_argument("--import-dir", help="Directory for an exported season bundle to import.")
     parser.add_argument(
         "--skip-enrich",
         action="store_true",
@@ -868,6 +1002,19 @@ if __name__ == "__main__":
                 "Player name coverage is incomplete after enrichment. "
                 f"Coverage: {coverage['players_status']}"
             )
+
+    elif args.mode == "current-season-update":
+        current_season_update(con, days=args.days)
+
+    elif args.mode == "export-season":
+        if args.season is None:
+            raise SystemExit("--season is required for mode 'export-season'")
+        export_season_bundle(con, season=args.season, export_root=args.export_root)
+
+    elif args.mode == "import-season":
+        if not args.import_dir:
+            raise SystemExit("--import-dir is required for mode 'import-season'")
+        import_season_bundle(con, args.import_dir)
 
     elif args.mode == "enrich":
         enrich_players(con)

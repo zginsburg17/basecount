@@ -35,8 +35,11 @@ General:
   ./run.sh api
   ./run.sh all
   ./run.sh ensure-history
+  ./run.sh current-season-update [days]
   ./run.sh status
   ./run.sh enrich
+  ./run.sh export-season <year> [export_root]
+  ./run.sh import-season <bundle_dir>
 
 ETL:
   ./run.sh recent [days]
@@ -44,6 +47,9 @@ ETL:
   ./run.sh range <start_year> <end_year> [chunk_days]
   ./run.sh all-history [chunk_days]
   ./run.sh ensure-history [chunk_days]
+  ./run.sh current-season-update [days]
+  ./run.sh export-season <year> [export_root]
+  ./run.sh import-season <bundle_dir>
 
 Legacy aliases:
   ./run.sh etl        -> ./run.sh recent
@@ -100,6 +106,35 @@ case "$MODE" in
         CHUNK_DAYS="${2:-7}"
         echo "Ensuring full Statcast history is loaded..."
         run_etl ensure-history --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    current-season-update)
+        DAYS="${2:-2}"
+        echo "Updating current season with the last ${DAYS} day(s) of regular-season/postseason data..."
+        run_etl current-season-update --days "$DAYS"
+        ;;
+
+    export-season)
+        SEASON="${2:-}"
+        EXPORT_ROOT="${3:-exports}"
+        if [ -z "$SEASON" ]; then
+            echo "Export-season mode requires a year."
+            print_usage
+            exit 1
+        fi
+        echo "Exporting season ${SEASON} to ${EXPORT_ROOT}..."
+        run_etl export-season --season "$SEASON" --export-root "$EXPORT_ROOT"
+        ;;
+
+    import-season)
+        IMPORT_DIR="${2:-}"
+        if [ -z "$IMPORT_DIR" ]; then
+            echo "Import-season mode requires a bundle directory."
+            print_usage
+            exit 1
+        fi
+        echo "Importing season bundle from ${IMPORT_DIR}..."
+        run_etl import-season --import-dir "$IMPORT_DIR"
         ;;
 
     enrich)
