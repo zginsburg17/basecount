@@ -79,6 +79,44 @@ def latest_data_context(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def expected_statcast_seasons() -> list[int]:
+    current_year = date.today().year
+    return list(range(2015, current_year + 1))
+
+
+def history_completeness(con: duckdb.DuckDBPyConnection) -> dict:
+    context = latest_data_context(con)
+    loaded = context["seasons"]
+    expected = expected_statcast_seasons()
+    missing = [season for season in expected if season not in set(loaded)]
+    return {
+        "expected_seasons": expected,
+        "loaded_seasons": loaded,
+        "missing_seasons": missing,
+        "history_complete": len(missing) == 0,
+    }
+
+
+def player_name_completeness(con: duckdb.DuckDBPyConnection) -> dict:
+    total_players, named_players, unnamed_players, team_players = con.execute(
+        """
+        SELECT
+            COUNT(*) AS total_players,
+            COUNT(*) FILTER (WHERE full_name IS NOT NULL) AS named_players,
+            COUNT(*) FILTER (WHERE full_name IS NULL) AS unnamed_players,
+            COUNT(*) FILTER (WHERE team IS NOT NULL) AS team_players
+        FROM players
+        """
+    ).fetchone()
+    return {
+        "total_players": total_players or 0,
+        "named_players": named_players or 0,
+        "unnamed_players": unnamed_players or 0,
+        "team_players": team_players or 0,
+        "name_complete": (unnamed_players or 0) == 0,
+    }
+
+
 def resolve_window(
     con: duckdb.DuckDBPyConnection,
     window: str = "season",
@@ -344,6 +382,8 @@ def pitcher_summary_query(where_sql: str) -> str:
 def api_meta_context():
     con = get_con()
     context = latest_data_context(con)
+    coverage = history_completeness(con)
+    name_coverage = player_name_completeness(con)
     batter_name = player_name_expr("Batter", "ab.batter_id")
     pitcher_name = player_name_expr("Pitcher", "p.pitcher_id")
 
@@ -382,8 +422,19 @@ def api_meta_context():
 
     return {
         **context,
+        "history": coverage,
+        "players_status": name_coverage,
         "batters": batter_records,
         "pitchers": pitcher_records,
+    }
+
+
+@app.get("/api/meta/coverage")
+def api_meta_coverage():
+    con = get_con()
+    return {
+        **history_completeness(con),
+        "players_status": player_name_completeness(con),
     }
 
 

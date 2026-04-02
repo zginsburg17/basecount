@@ -1,286 +1,173 @@
 # BaseCount
 
-BaseCount is a local baseball analytics app built on MLB Statcast data.
+## Overview
 
-## TL;DR
+BaseCount is a local baseball analytics application built on MLB Statcast pitch-level data. It downloads Statcast data through `pybaseball`, stores the results in a local DuckDB database, serves analytics through a FastAPI application, and renders the results in a browser-based dashboard.
 
-If you want the fastest possible setup, run these commands:
+The system is designed to support:
 
-```bash
-./run.sh all-history
-./run.sh enrich
-./run.sh api
-open dashboard/dashboard.html
-```
+- single-season analysis
+- multi-season range analysis
+- pitch-by-pitch count-state analysis
+- handedness and outs filtering
+- batter, pitcher, leaderboard, and sequence views
 
-What these do:
+Statcast pitch-level support begins in `2015`, so the historical coverage standard for this project starts with the `2015` season and extends through the current season. As of April 2, 2026, that expected range is `2015-2026`.
 
-- load all supported Statcast history starting in `2015`
-- fill in player names and metadata
-- start the local API
-- open the dashboard in your browser
+## Purpose
 
-If something looks wrong, run:
+This document is intended to be a complete operating manual for the project. It is written to be precise, formal, and step-by-step so that a user with limited technical background can still install, run, verify, and troubleshoot the application successfully.
 
-```bash
-./run.sh status
-```
+## Documentation Maintenance Requirement
 
-That tells you what seasons are actually loaded.
+The README is part of the product documentation and must be maintained whenever the codebase changes in a way that affects setup, operation, behavior, commands, architecture, file layout, user workflow, or troubleshooting.
 
-It lets you:
+The maintenance standard for this repository is:
 
-- load pitch-by-pitch MLB data into a local database
-- explore exact pitch counts like `0-2`, `2-1`, `3-2`
-- filter by outs, handedness, pitch type, batter, pitcher, and season
-- compare one season or a range of seasons
-- view batter, pitcher, leaderboard, and pitch-sequence dashboards in the browser
+1. any code change that makes the README inaccurate requires a README update in the same body of work
+2. new commands, renamed commands, removed commands, or changed defaults must be reflected in the README
+3. UI workflow changes that affect what the user sees or clicks must be reflected in the README
+4. changes to the repository structure that affect the documented file tree must be reflected in the README
+5. changes to data-loading behavior, season support, API behavior, or player-enrichment behavior must be reflected in the README
 
-This README is written for non-technical users on purpose. If you can copy/paste commands into Terminal, you can run this project.
+In practical terms, the README should be treated as a required deliverable, not optional cleanup.
 
-## What This Project Actually Is
+## System Architecture
 
-BaseCount has 4 parts:
+BaseCount consists of four major layers:
 
-1. `etl/pipeline.py`
-Pulls Statcast data from `pybaseball` and stores it in a local DuckDB database.
+1. Data ingestion
+   The ETL pipeline downloads Statcast data and writes it into a local DuckDB database.
 
-2. `baseball.duckdb`
-The local database file. This is where the loaded MLB data lives.
+2. Local database
+   DuckDB stores pitch-level, at-bat, player, and game data on disk in a single local file.
 
-3. `api/main.py`
-A local API server that reads the database and returns dashboard data.
+3. Local API
+   FastAPI reads the DuckDB database and exposes analytics endpoints on `http://localhost:8000`.
 
-4. `dashboard/dashboard.html`
-The browser dashboard UI.
+4. Browser dashboard
+   The dashboard reads from the local API and displays the analytics interface.
 
-Important: the dashboard does not work by itself. It needs the local API running, and the API needs the local database to have data in it.
+The dashboard depends on the API. The API depends on the DuckDB database. If the database is empty, the API cannot serve meaningful data. If the API is not running, the dashboard cannot display meaningful data.
 
-## What Data Is Supported
+## Current Repository Directory
 
-- Statcast pitch-level data is supported back to `2015`
-- single-season analysis is supported
-- multi-season range analysis is supported
-- “all loaded seasons” analysis is supported
-
-If you load `2015` through `2026`, the dashboard can query across that full range.
-
-## Folder Map
+The repository currently contains the following files and directories:
 
 ```text
 basecount/
-├── api/
-│   └── main.py
+├── .claude/
+│   └── worktrees/
+│       ├── compassionate-galileo/
+│       └── goofy-knuth/
+├── .git/
+├── .gitignore
+├── README.md
 ├── analytics/
 │   └── queries.py
+├── api/
+│   └── main.py
 ├── dashboard/
+│   ├── dashboard.css
 │   ├── dashboard.html
 │   └── dashboard.js
 ├── etl/
 │   └── pipeline.py
-├── run.sh
 ├── requirements.txt
-└── baseball.duckdb         # created after you load data
+└── run.sh
 ```
 
-## Before You Start
-
-You need:
-
-- macOS, Linux, or a Unix-like terminal
-- Python 3 installed
-- internet access
-
-Why internet access matters:
-
-- BaseCount downloads Statcast data from `pybaseball`
-- player-name enrichment also depends on online lookups
-- `run.sh` installs Python packages the first time it runs
-
-## The Easiest Way To Think About The Workflow
-
-There are only 3 big steps:
-
-1. Load baseball data
-2. Start the API
-3. Open the dashboard
-
-That’s it.
-
-## Quick Start For First-Time Users
-
-If you want the shortest version:
-
-### 1. Open Terminal in the project folder
-
-If you are not already in the repo:
-
-```bash
-cd /path/to/basecount
-```
-
-### 2. Load all available Statcast history
-
-```bash
-./run.sh all-history
-```
-
-What this does:
-
-- creates a virtual environment if needed
-- installs dependencies
-- downloads Statcast data starting from `2015`
-- stores it in `baseball.duckdb`
-- enriches player metadata when possible
-
-Important:
-
-- this can take a long time
-- it may run for a while because it loads season by season
-- this is normal
-
-### 3. Start the API server
-
-Open a new Terminal tab or window in the same project folder and run:
-
-```bash
-./run.sh api
-```
-
-Leave this terminal window open while you use the dashboard.
-
-If it is working, you should see output indicating the API is running at:
+Files that are created later during normal use:
 
 ```text
-http://localhost:8000
+basecount/
+├── baseball.duckdb
+└── venv/
 ```
 
-### 4. Open the dashboard
+Notes:
 
-Open this file in your browser:
+- `baseball.duckdb` is created after data is loaded.
+- `venv/` is created automatically by [run.sh](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/run.sh) if it does not already exist.
+- `.claude/` and `.git/` are repository support directories and are not part of the application runtime.
 
-[dashboard/dashboard.html](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.html)
+## Key Files
 
-On a Mac, you can also run:
+- [run.sh](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/run.sh)
+  Primary entry point for installation, ETL commands, enrichment, status checks, and starting the API.
 
-```bash
-open dashboard/dashboard.html
-```
+- [etl/pipeline.py](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/etl/pipeline.py)
+  ETL pipeline that pulls Statcast data, writes DuckDB tables, and enriches player information.
 
-### 5. Use the season controls at the top of the dashboard
+- [api/main.py](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/api/main.py)
+  FastAPI application that exposes the analytics endpoints.
 
-You can choose:
+- [analytics/queries.py](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/analytics/queries.py)
+  Analytical SQL/query logic used by the API.
 
-- `Single Season`
-- `Season Range`
+- [dashboard/dashboard.html](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.html)
+  Main dashboard HTML file opened in the browser.
 
-If multiple seasons are loaded, the dashboard should let you work across the full loaded range.
+- [dashboard/dashboard.js](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.js)
+  Frontend logic for dashboard interactivity and API requests.
 
-## What You Should See
+- [dashboard/dashboard.css](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.css)
+  Dashboard styling.
 
-This section is here so you know whether the app is behaving normally.
+- [requirements.txt](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/requirements.txt)
+  Python package dependencies.
 
-### After `./run.sh all-history`
+## Prerequisites
 
-You should expect:
+Before using BaseCount, confirm the following:
 
-- lots of log output in Terminal
-- messages showing date ranges being fetched
-- rows being inserted into the database
-- the process to take a while
+1. Python 3 is installed.
+2. Terminal access is available.
+3. Internet access is available.
+4. The repository has been downloaded locally.
 
-This is normal. Historical pitch-level data is large.
+Internet access is required because:
 
-### After `./run.sh status`
+- `run.sh` installs Python dependencies
+- the ETL downloads Statcast data through `pybaseball`
+- player-name enrichment uses online lookups
 
-You should see:
+## Supported Data Modes
 
-- a list of loaded seasons
-- the earliest and latest game dates in the database
-- a row count summary
+BaseCount currently supports the following data-loading modes:
 
-If you only see `2026`, then only `2026` is loaded.
+- `recent`
+  Loads only a recent window of data. This is useful for refreshing current-season data, but it is not a historical backfill.
 
-### After `./run.sh api`
+- `season`
+  Loads a single season.
 
-You should see:
+- `range`
+  Loads an inclusive range of seasons.
 
-- output indicating the API started successfully
-- a local address such as `http://localhost:8000`
+- `all-history`
+  Loads all supported Statcast seasons beginning in `2015`.
 
-If you open:
+- `ensure-history`
+  Verifies that every supported Statcast season from `2015` through the current season is present, backfills any missing seasons, reruns player enrichment, and fails if player-name coverage is still incomplete.
 
-```text
-http://localhost:8000/docs
-```
+- `enrich`
+  Fills in missing player metadata such as names, handedness, position, and team when possible.
 
-you should see the FastAPI docs page.
+- `status`
+  Reports what data is currently loaded in the DuckDB database.
 
-### After opening the dashboard
+## Standard Workflow
 
-You should see:
+For most users, the standard operating procedure is:
 
-- a dark-themed dashboard
-- a top season control area
-- navigation for `Count State`, `Batter Profile`, `Pitcher Profile`, `Leaderboard`, and `Pitch Sequence`
-- data-driven tables and charts once the API responds
+1. Load historical data into DuckDB.
+2. Confirm the database contains the expected seasons.
+3. Enrich player names and metadata.
+4. Start the API.
+5. Open the dashboard.
 
-If the dashboard opens but looks empty, the API is usually not running or the database is empty.
-
-## The Main Commands You Need
-
-BaseCount is meant to be driven through `run.sh`.
-
-### Most important commands
-
-```bash
-./run.sh api
-./run.sh status
-./run.sh enrich
-./run.sh all-history
-./run.sh season 2025
-./run.sh range 2018 2025
-./run.sh recent
-```
-
-### What each command does
-
-`./run.sh api`
-
-- starts the API only
-- use this after your database already has data
-
-`./run.sh status`
-
-- shows which seasons are loaded
-- shows date coverage and row count
-- use this if you are unsure what is in the database
-
-`./run.sh enrich`
-
-- tries to fill in missing player names and metadata
-- use this if you still see labels like `Batter #657656`
-
-`./run.sh all-history`
-
-- backfills all supported Statcast seasons starting in `2015`
-- this is the best first-run option if you want the full historical tool
-
-`./run.sh season 2025`
-
-- loads one season only
-
-`./run.sh range 2018 2025`
-
-- loads every season from `2018` through `2025`
-
-`./run.sh recent`
-
-- loads recent data only
-- this is not a historical backfill
-- this usually only brings in the current season
-
-## Very Important: What `./run.sh` Does By Default
+## Important Default Behavior
 
 If you run:
 
@@ -288,438 +175,328 @@ If you run:
 ./run.sh
 ```
 
-the current default mode is `all`, which means:
+the script defaults to `all`, which means:
 
-1. load recent data only
-2. start the API
+1. it verifies that the full required historical range is loaded
+2. it backfills any missing seasons
+3. it starts the API
 
-That is not the same as loading all seasons.
+This is stricter than the older recent-only behavior.
 
-So if you want historical seasons, do not rely on plain `./run.sh` alone. Use one of these:
+If you need historical seasons, you must explicitly use one of the following:
 
 ```bash
 ./run.sh all-history
+./run.sh ensure-history
 ./run.sh season 2025
 ./run.sh range 2015 2025
 ```
 
-## Step-By-Step Setup Guide
+## Installation and First-Time Setup
 
-## Option A: Full Historical Setup
+This section provides the recommended first-time setup procedure.
 
-This is the recommended path if you want the complete tool.
+### Step 1: Open a terminal in the project directory
 
-### Step 1. Go to the project folder
+Change into the repository directory:
 
 ```bash
 cd /path/to/basecount
 ```
 
-### Step 2. Load all history
+Replace `/path/to/basecount` with the actual path to the repository on your machine.
+
+### Step 2: Ensure the full historical dataset is present
+
+Run:
+
+```bash
+./run.sh ensure-history
+```
+
+What this command does:
+
+1. creates a Python virtual environment if one does not already exist
+2. activates the virtual environment
+3. installs the packages from `requirements.txt`
+4. checks whether every season from `2015` through the current year is already loaded
+5. downloads only the missing seasons when history is incomplete
+6. writes the data into `baseball.duckdb`
+7. runs player enrichment automatically
+8. verifies that historical season coverage is complete
+9. stops with an error if player-name coverage is still incomplete
+
+This is the preferred command for regular use because it verifies completeness rather than assuming completeness.
+
+If you want to force a full historical backfill from scratch instead of verifying and filling gaps, use:
 
 ```bash
 ./run.sh all-history
 ```
 
-### Step 3. Confirm the seasons loaded
+What `./run.sh all-history` does:
+
+1. downloads the entire supported Statcast range season by season
+2. writes the data into `baseball.duckdb`
+3. runs player enrichment automatically unless skipped internally
+
+What to expect:
+
+- the process may take a long time
+- the terminal will display many data-loading messages
+- this is normal for historical pitch-level data
+
+### Step 3: Verify what seasons were loaded
+
+Run:
 
 ```bash
 ./run.sh status
 ```
 
-You should see a list of loaded seasons and the date span in the database.
+This command reports:
 
-### Step 4. Run name enrichment again if needed
+- the list of loaded seasons
+- the earliest game date in the database
+- the latest game date in the database
+- a total row count summary
+- player-name coverage information
+
+This is the most reliable way to confirm what data the application can query.
+
+### Step 4: Run enrichment again if player names are incomplete
+
+Run:
 
 ```bash
 ./run.sh enrich
 ```
 
-This is safe to run more than once.
+This command is safe to run multiple times.
 
-### Step 5. Start the API
+Use it when:
+
+- player names are missing
+- labels such as `Batter #657656` appear
+- team information looks incomplete
+
+### Step 5: Start the API server
+
+Open a second terminal window or tab in the same project directory and run:
 
 ```bash
 ./run.sh api
 ```
 
-### Step 6. Open the dashboard
+Keep this terminal open while using the dashboard.
+
+If the API starts correctly, it should run locally at:
+
+```text
+http://localhost:8000
+```
+
+### Step 6: Open the dashboard in a browser
+
+Open the dashboard file:
+
+[dashboard/dashboard.html](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.html)
+
+On macOS, you can also run:
 
 ```bash
 open dashboard/dashboard.html
 ```
 
-## Option B: Load Only One Season
+### Step 7: Confirm the dashboard is connected
 
-If you only want one season:
+After the dashboard opens, confirm the following:
 
-```bash
-./run.sh season 2025
-./run.sh api
-open dashboard/dashboard.html
-```
+1. the page loads visually
+2. the top season controls are visible
+3. the dashboard pages are visible in the sidebar
+4. tables and charts populate from the API
 
-## Option C: Load A Custom Range
+If the page opens but remains empty, the most common causes are:
 
-If you want a range like `2021` through `2025`:
+- the API is not running
+- the database contains no data
+- the wrong HTML file was opened
 
-```bash
-./run.sh range 2021 2025
-./run.sh status
-./run.sh api
-open dashboard/dashboard.html
-```
+## Daily Use Workflow
 
-## How The Season Filtering Works
+After the initial historical backfill is complete, the typical day-to-day workflow is:
 
-There are 2 different ideas that matter:
-
-1. What seasons are loaded into the database
-2. What season filter you selected in the dashboard
-
-The dashboard cannot show a season that has not been loaded.
-
-Examples:
-
-- if only `2026` is loaded, selecting `2024` will not return meaningful results
-- if `2015-2026` are loaded, you can use `Single Season` or `Season Range`
-
-If season filtering looks wrong, the first thing to check is:
+### 1. Refresh recent data
 
 ```bash
-./run.sh status
+./run.sh recent
 ```
 
-## How Player Names Work
-
-Player names come from 2 places:
-
-1. the local `players` table
-2. fallback name lookups when the API can resolve MLBAM IDs
-
-If you still see labels like:
-
-- `Batter #657656`
-- `Pitcher #123456`
-
-then run:
+### 2. Refresh player enrichment
 
 ```bash
 ./run.sh enrich
 ```
 
-Why this happens:
+### 3. Start the API
 
-- the ETL always stores player IDs
-- names are added in a later enrichment step
-- if enrichment fails or is incomplete, the app falls back to ID-based labels
+```bash
+./run.sh api
+```
 
-Teams:
+### 4. Open the dashboard
 
-- team codes are usually inferred from pitch data even if the full player profile is incomplete
-- the dashboard now prefers labels like `Player Name · TEAM`
+```bash
+open dashboard/dashboard.html
+```
 
-## What Each Dashboard Page Does
+## Command Reference
 
-## Count State
+This section documents the supported [run.sh](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/run.sh) commands.
 
-Shows how hitting changes by exact count.
+### `./run.sh api`
 
-Examples:
+Starts the API only.
 
-- who hits best in `2-1`
-- how strikeout rate changes in `0-2`
-- how zone usage changes by count
+Use this when:
 
-Supports filters like:
+- the database already contains data
+- you want to browse the dashboard
 
-- balls
-- strikes
-- outs
-- batter handedness
-- pitcher handedness
-- single season
-- season range
+### `./run.sh status`
 
-## Batter Profile
+Displays what data is currently loaded.
 
-Shows a selected batter’s overview and count-based performance.
+Use this when:
 
-## Pitcher Profile
+- you are not sure which seasons are in the database
+- you need to verify a backfill completed correctly
+- season filtering appears incorrect
 
-Shows a selected pitcher’s overview, count profile, and splits.
+The status output now also reports:
 
-## Leaderboard
+- expected seasons
+- missing seasons
+- whether full historical coverage is complete
+- player-name coverage counts
 
-Shows ranked batting or pitching leaderboards based on the current filters.
+### `./run.sh enrich`
 
-## Pitch Sequence
+Enriches player metadata.
 
-Shows common pitch-to-pitch patterns for a selected pitcher.
+Use this when:
 
-## Troubleshooting
+- names are missing
+- team information is missing
+- fallback player ID labels are appearing
 
-## Problem: `./run.sh` says permission denied
+### `./run.sh recent`
+
+Loads recent data only.
+
+Important:
+
+- this is not a historical backfill
+- this usually loads only current-season data
+
+Optional example:
+
+```bash
+./run.sh recent 7
+```
+
+### `./run.sh season <year>`
+
+Loads a single season.
 
 Example:
 
-```text
-zsh: permission denied: ./run.sh
+```bash
+./run.sh season 2025
 ```
 
-Fix:
+### `./run.sh range <start_year> <end_year>`
+
+Loads an inclusive range of seasons.
+
+Example:
 
 ```bash
-chmod +x run.sh
+./run.sh range 2018 2025
 ```
 
-Then try again.
+### `./run.sh all-history`
 
-## Problem: only one season is showing up
+Loads all supported Statcast history starting from `2015`.
 
-Most likely cause:
-
-- you ran `./run.sh`
-- that only loaded recent data
-
-Fix:
-
-```bash
-./run.sh all-history
-```
-
-or:
-
-```bash
-./run.sh range 2015 2026
-```
-
-Then check:
-
-```bash
-./run.sh status
-```
-
-## Problem: player names are missing
-
-Fix:
-
-```bash
-./run.sh enrich
-```
-
-If names are still incomplete:
-
-- check your internet connection
-- re-run `./run.sh enrich`
-- some players may still temporarily fall back to IDs if lookups fail
-
-## Problem: the dashboard opens, but looks empty
-
-Check these in order:
-
-1. Is the API running?
-2. Does `http://localhost:8000/docs` open in your browser?
-3. Does the database actually contain data?
-4. Did you open the correct dashboard file?
-
-Useful commands:
-
-```bash
-./run.sh status
-./run.sh api
-```
-
-## Problem: the dashboard is using the wrong season
-
-Check these:
-
-1. Run `./run.sh status` and make sure the season you want is actually loaded
-2. Refresh the dashboard page in the browser
-3. Confirm the top filter says `Single Season` or `Season Range` as expected
-4. Make sure the selected year falls inside the loaded range
-
-## Problem: `all-history` takes forever
-
-This is expected.
-
-Reasons:
-
-- it is downloading many seasons of pitch-by-pitch data
-- Statcast data is large
-- the ETL runs in chunks to avoid hammering the source
-
-Best practice:
-
-- let it finish
-- use `./run.sh status` after completion
-- do not assume failure just because it is slow
-
-## Problem: the API will not start
-
-Make sure:
-
-- dependencies installed successfully
-- no other app is already using port `8000`
-- the project folder contains the expected files
-
-You can also try starting it directly:
-
-```bash
-python api/main.py
-```
-
-## FAQ
-
-## Do I need to run `all-history` every time?
-
-No.
-
-Usually:
-
-- run `./run.sh all-history` once for the big initial load
-- run `./run.sh recent` later when you want newer data
-- run `./run.sh enrich` if player names still look incomplete
-
-## Why does `./run.sh` by itself not load all years?
-
-Because plain:
-
-```bash
-./run.sh
-```
-
-currently defaults to `all`, and `all` means:
-
-1. load recent data only
-2. start the API
-
-It does not mean “load every historical season.”
-
-## Why am I only seeing the current year?
-
-Usually because only the current season has been loaded into the database.
-
-Check:
-
-```bash
-./run.sh status
-```
-
-If you want all supported seasons, run:
+Example:
 
 ```bash
 ./run.sh all-history
 ```
 
-## Why do I see `Batter #123456` instead of a real name?
+### `./run.sh ensure-history`
 
-Because the player ID exists, but the name enrichment is incomplete or missing.
+Verifies that all required seasons from `2015` through the current season are present.
 
-Run:
+If any seasons are missing, it backfills only those missing seasons and then reruns player enrichment.
 
-```bash
-./run.sh enrich
-```
+This mode is intentionally strict:
 
-## Can this project analyze multiple seasons at once?
+- it fails if historical season coverage is still incomplete
+- it fails if player-name coverage is still incomplete after enrichment
 
-Yes.
-
-That is supported as long as those seasons are loaded into the database.
-
-Use:
-
-- `Single Season` for one year
-- `Season Range` for multiple years
-
-## What is the oldest supported season?
-
-Statcast pitch-level support begins in `2015`.
-
-## Do I need to keep the API terminal open?
-
-Yes.
-
-If the API is not running, the dashboard has nothing to talk to.
-
-## Can I open the HTML file without the API?
-
-You can open it, but it will not function correctly without the API.
-
-The dashboard page is just the frontend. The real data comes from the local API.
-
-## How do I know whether the database actually has data?
-
-Run:
+Example:
 
 ```bash
-./run.sh status
+./run.sh ensure-history
 ```
 
-That is the quickest truth check.
+### `./run.sh all`
 
-## How do I refresh player names after loading new data?
+Ensures the full required historical range is loaded and then starts the API.
 
-Run:
+This is the same mode used by default when you run `./run.sh` with no arguments.
 
-```bash
-./run.sh enrich
-```
+## ETL Reference
 
-It is safe to run more than once.
-
-## Best Practices
-
-- use `./run.sh all-history` for your first serious setup
-- run `./run.sh status` any time you are confused about what data is loaded
-- run `./run.sh enrich` if names or teams look incomplete
-- keep the API terminal open while using the dashboard
-- use `Single Season` for year-specific analysis
-- use `Season Range` for multi-year analysis
-
-## Advanced: Direct ETL Commands
-
-If you prefer to run the ETL directly instead of `run.sh`, these are the raw Python commands:
+If you prefer to run the ETL directly instead of the shell wrapper, the raw commands are:
 
 ```bash
 python etl/pipeline.py recent --days 7
 python etl/pipeline.py season --season 2025
 python etl/pipeline.py range --season-start 2018 --season-end 2025
 python etl/pipeline.py all-history
+python etl/pipeline.py ensure-history
 python etl/pipeline.py enrich
 python etl/pipeline.py status
 ```
 
-There is also an optional custom DB path:
+Optional custom database path:
 
 ```bash
 python etl/pipeline.py status --db-path custom.duckdb
 ```
 
-The API also respects:
+## API Reference
 
-```bash
-DB_PATH=custom.duckdb python api/main.py
-```
-
-## API Overview
-
-The API runs locally at:
+The local API runs at:
 
 ```text
 http://localhost:8000
 ```
 
-Interactive docs:
+Interactive API documentation is available at:
 
 ```text
 http://localhost:8000/docs
 ```
 
-Examples of supported routes:
+Representative endpoints include:
 
 - `/api/meta/context`
+- `/api/meta/coverage`
 - `/api/count-state/outcome-matrix`
 - `/api/count-state/batter-splits`
 - `/api/batter/{batter_id}/overview`
@@ -728,94 +505,249 @@ Examples of supported routes:
 - `/api/leaderboard/stuff`
 - `/api/sequences`
 
-Many of these support:
+Many endpoints support either:
 
 - `season=2025`
+
+or:
+
 - `season_start=2018&season_end=2025`
 
-## Database Overview
+## Dashboard Usage
 
-The main tables are:
+The dashboard supports both single-season and multi-season analysis.
 
-`pitches`
+The backend also exposes explicit completeness information so the application can report whether:
 
-- the atomic pitch-level table
-- includes count, outs, runners, pitch type, velo, spin, location, and result
+- all expected seasons are loaded
+- any seasons are missing
+- any player names remain unresolved
 
-`at_bats`
+### Season Controls
 
-- built from the pitch table
-- used for faster leaderboard and split queries
+At the top of the dashboard, select either:
 
-`players`
+- `Single Season`
+- `Season Range`
 
-- player metadata like name, handedness, position, and team
+Use `Single Season` when you want one year only.
 
-`games`
+Use `Season Range` when you want multiple years together.
 
-- game-level information
+Important:
 
-`ingestion_log`
+- the dashboard can only query seasons that are actually loaded in the database
+- if a season is not loaded, filtering to that season will not produce meaningful results
 
-- tracks ETL runs
-
-## If You Want The Simplest Reliable Routine
-
-Use this exact routine:
-
-### First time only
+Always verify available data with:
 
 ```bash
-./run.sh all-history
+./run.sh status
+```
+
+### Player Labels
+
+Player labels are intended to display as:
+
+```text
+Player Name · TEAM
+```
+
+If the application cannot resolve the player name, it may temporarily fall back to a label such as:
+
+```text
+Batter #657656
+```
+
+If this occurs, run:
+
+```bash
 ./run.sh enrich
 ```
 
-### Every time you want to use the app
+## Database Overview
 
-In one terminal:
+The major DuckDB tables are:
 
-```bash
-./run.sh api
+### `pitches`
+
+The atomic pitch-level table. This table stores:
+
+- pitch identifiers
+- pitcher and batter IDs
+- count state
+- outs
+- runners on base
+- pitch type
+- velocity
+- spin
+- movement
+- location
+- result information
+
+### `at_bats`
+
+A derived table created from pitch-level data for more efficient query patterns.
+
+### `players`
+
+Stores player metadata such as:
+
+- full name
+- handedness
+- position
+- team
+
+### `games`
+
+Stores game-level information.
+
+### `ingestion_log`
+
+Stores ETL run history.
+
+## Verification Checklist
+
+After setup, the following checks should all succeed:
+
+1. `./run.sh status` lists the expected seasons
+2. `./run.sh api` starts without error
+3. `http://localhost:8000/docs` opens successfully
+4. [dashboard/dashboard.html](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.html) opens successfully
+5. the dashboard displays data-driven charts and tables
+6. player names appear correctly after enrichment
+
+## Troubleshooting
+
+### Problem: `./run.sh` returns `permission denied`
+
+Example:
+
+```text
+zsh: permission denied: ./run.sh
 ```
 
-Then in your browser:
+Resolution:
 
 ```bash
+chmod +x run.sh
+```
+
+Then run the command again.
+
+### Problem: only one season is available
+
+Most common cause:
+
+- `./run.sh` or `./run.sh all` was used, which loads recent data only
+
+The project now uses a stricter standard: `./run.sh all` should ensure complete historical coverage before starting the API. If the database was created under older behavior, run:
+
+```bash
+./run.sh ensure-history
+```
+
+Resolution:
+
+```bash
+./run.sh ensure-history
+```
+
+or:
+
+```bash
+./run.sh range 2015 2026
+```
+
+Then verify:
+
+```bash
+./run.sh status
+```
+
+### Problem: player names are missing
+
+Resolution:
+
+```bash
+./run.sh enrich
+```
+
+If names remain incomplete:
+
+1. verify internet access
+2. run the enrichment again
+3. accept that some unresolved IDs may still temporarily appear as fallback labels
+
+### Problem: the dashboard opens but is blank
+
+Check the following in order:
+
+1. confirm the API terminal is still running
+2. confirm `http://localhost:8000/docs` opens in a browser
+3. confirm the database contains data with `./run.sh status`
+4. confirm the correct dashboard file was opened
+
+### Problem: the dashboard is using the wrong season
+
+Check the following:
+
+1. confirm the season is actually loaded with `./run.sh status`
+2. confirm the correct top-level season mode is selected
+3. confirm the selected year falls within the loaded range
+4. refresh the dashboard page
+
+### Problem: historical loading takes a long time
+
+This is expected.
+
+Reasons:
+
+- historical pitch-level data is large
+- the ETL loads data in chunks
+- the pipeline is intentionally conservative with external requests
+
+### Problem: the API does not start
+
+Check the following:
+
+1. dependencies installed successfully
+2. Python is available
+3. port `8000` is not already in use
+4. the repository files are present
+
+You can also start the API directly:
+
+```bash
+python api/main.py
+```
+
+## Recommended Operating Pattern
+
+For a new full installation:
+
+```bash
+./run.sh ensure-history
+./run.sh status
+./run.sh api
 open dashboard/dashboard.html
 ```
 
-### When you want fresh data
+For normal ongoing use:
 
 ```bash
 ./run.sh recent
 ./run.sh enrich
+./run.sh api
+open dashboard/dashboard.html
 ```
-
-## Current Data / Behavior Notes
-
-- historical Statcast support starts in `2015`
-- `recent` mode usually brings in only the current season
-- `all-history` is the correct command for full historical backfill
-- the dashboard depends on the API, and the API depends on the local DuckDB file
-- name enrichment may need to be rerun if player labels still appear as IDs
-
-## For Developers
-
-Core files:
-
-- [run.sh](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/run.sh)
-- [etl/pipeline.py](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/etl/pipeline.py)
-- [api/main.py](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/api/main.py)
-- [analytics/queries.py](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/analytics/queries.py)
-- [dashboard/dashboard.html](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.html)
-- [dashboard/dashboard.js](/Users/zacharyginsburg/.codex/worktrees/1abd/basecount/dashboard/dashboard.js)
 
 ## Summary
 
-If you remember only 4 commands, remember these:
+The most important commands for most users are:
 
 ```bash
-./run.sh all-history
+./run.sh ensure-history
 ./run.sh status
 ./run.sh enrich
 ./run.sh api
@@ -824,7 +756,7 @@ If you remember only 4 commands, remember these:
 Then open:
 
 ```bash
-dashboard/dashboard.html
+open dashboard/dashboard.html
 ```
 
-That is the simplest complete BaseCount workflow.
+That is the standard, complete BaseCount operating sequence.
