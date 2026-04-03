@@ -1553,18 +1553,33 @@ def backfill_season_range(
     chunk_days: int = 7,
     delay_between_seasons: float = 5.0,
     include_season_stats: bool = True,
+    export_root: str = "exports",
 ) -> int:
-    """Backfill an inclusive season range."""
+    """Load an inclusive range of seasons, preferring Parquet bundles over API pulls.
+
+    For each season, :func:`load_season_smart` is called: if a Parquet bundle
+    exists it is imported instantly; otherwise the season is pulled from the
+    Statcast API and then exported for future use.
+    """
     start, end = sorted((season_start, season_end))
     total = 0
 
     for idx, season in enumerate(range(start, end + 1)):
-        total += backfill_season(con, season=season, chunk_days=chunk_days)
-        refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
-        if idx < (end - start):
+        source = load_season_smart(
+            con,
+            season=season,
+            chunk_days=chunk_days,
+            export_root=export_root,
+            include_season_stats=include_season_stats,
+        )
+        row = con.execute("SELECT COUNT(*) FROM pitches WHERE season = ?", [season]).fetchone()
+        season_rows = row[0] if row else 0
+        total += season_rows
+        log.info(f"Season {season} loaded via {source} ({season_rows:,} pitches).")
+        if idx < (end - start) and source == "api":
             time.sleep(delay_between_seasons)
 
-    log.info(f"Historical backfill {start}-{end} complete. Total pitches: {total:,}")
+    log.info(f"Range {start}-{end} complete. Total pitches: {total:,}")
     return total
 
 
@@ -1663,15 +1678,29 @@ def ensure_full_history(
     con: duckdb.DuckDBPyConnection,
     chunk_days: int = 7,
     include_season_stats: bool = True,
+    export_root: str = "exports",
 ) -> dict:
+    """Ensure every expected Statcast season is loaded in the database.
+
+    For each missing season, Parquet bundles are checked first.  A season is
+    only pulled from the Statcast API when no bundle exists on disk — and once
+    pulled, a bundle is immediately written so the API is never called again
+    for that season.
+    """
     coverage = verify_history_coverage(con)
     missing = coverage["missing_seasons"]
 
     if missing:
         log.info(f"Missing historical seasons detected: {missing}")
         for season in missing:
-            backfill_season(con, season=season, chunk_days=chunk_days)
-            refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
+            source = load_season_smart(
+                con,
+                season=season,
+                chunk_days=chunk_days,
+                export_root=export_root,
+                include_season_stats=include_season_stats,
+            )
+            log.info(f"Season {season} loaded via {source}.")
     else:
         log.info("Full historical season coverage already present.")
 
@@ -1712,6 +1741,48 @@ def refresh_season_derived_data(
     if include_external_season_stats:
         result["external_stats"] = ingest_fangraphs_season_stats(con, season)
     return result
+
+
+def bundle_exists(season: int, export_root: str = "exports") -> bool:
+    """Return True if a valid Parquet bundle exists for *season*.
+
+    A bundle is considered valid when at minimum ``pitches.parquet`` is
+    present inside ``<export_root>/season=<season>/``.  This is the gate
+    used by :func:`load_season_smart` to decide between a Parquet import
+    and a live Statcast API pull.
+    """
+    return (Path(export_root) / f"season={season}" / "pitches.parquet").exists()
+
+
+def load_season_smart(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    chunk_days: int = 7,
+    export_root: str = "exports",
+    include_season_stats: bool = True,
+) -> str:
+    """Load one season — from Parquet if a bundle exists, from Statcast otherwise.
+
+    This is the primary entry-point for loading historical seasons.  The rule
+    is simple:
+
+    * **Bundle exists** → ``import_season_bundle()`` (fast, no API calls).
+    * **No bundle** → ``backfill_season()`` from the Statcast API, then
+      ``export_season_bundle()`` so future runs never hit the API again.
+
+    Returns ``"parquet"`` or ``"api"`` indicating which path was taken.
+    """
+    if bundle_exists(season, export_root=export_root):
+        log.info(f"Season {season}: Parquet bundle found — importing (no API call).")
+        import_season_bundle(con, str(Path(export_root) / f"season={season}"))
+        return "parquet"
+
+    log.info(f"Season {season}: No bundle found — pulling from Statcast API.")
+    backfill_season(con, season=season, chunk_days=chunk_days)
+    refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
+    export_season_bundle(con, season=season, export_root=export_root)
+    log.info(f"Season {season}: Exported to {export_root}/season={season}/ for future use.")
+    return "api"
 
 
 def export_season_bundle(
@@ -1986,10 +2057,15 @@ if __name__ == "__main__":
     elif args.mode == "season":
         if args.season is None:
             raise SystemExit("--season is required for mode 'season'")
-        backfill_season(con, season=args.season, chunk_days=args.chunk_days)
+        load_season_smart(
+            con,
+            season=args.season,
+            chunk_days=args.chunk_days,
+            export_root=args.export_root,
+            include_season_stats=not args.skip_season_stats,
+        )
         if not args.skip_enrich:
             enrich_players(con)
-        refresh_season_derived_data(con, args.season, include_external_season_stats=not args.skip_season_stats)
 
     elif args.mode == "rebuild-season":
         if args.season is None:
@@ -2011,6 +2087,7 @@ if __name__ == "__main__":
             season_end=args.season_end,
             chunk_days=args.chunk_days,
             include_season_stats=not args.skip_season_stats,
+            export_root=args.export_root,
         )
         if not args.skip_enrich:
             enrich_players(con)
@@ -2029,6 +2106,7 @@ if __name__ == "__main__":
             con,
             chunk_days=args.chunk_days,
             include_season_stats=not args.skip_season_stats,
+            export_root=args.export_root,
         )
         if not coverage["history_complete"]:
             raise SystemExit(
