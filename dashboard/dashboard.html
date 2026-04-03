@@ -414,20 +414,15 @@
       </div>
 
       <div class="profile-controls">
-        <div class="ctrl-group" style="min-width:min(100%, 720px);flex:1">
-          <div class="ctrl-label">Pitcher Comparison Slots</div>
-          <div id="pitcher-compare-controls" style="display:flex;flex-direction:column;gap:10px;width:100%"></div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">Select Pitcher</div>
+          <input type="text" id="pitcher-select" class="player-select" placeholder="Start typing..." onchange="renderPitcherProfile()" list="pitcher-list" style="background:var(--bg);color:var(--text)"/>
           <datalist id="pitcher-list">
             <option value="League Average"></option>
             <option value="C. Burnes"></option><option value="S. Alcantara"></option><option value="Z. Wheeler"></option>
             <option value="K. Gausman"></option><option value="G. Cole"></option><option value="M. Fried"></option>
             <option value="L. Webb"></option><option value="P. Corbin"></option>
           </datalist>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="window-tab" id="pitcher-add-slot" type="button">Add Pitcher</button>
-            <button class="window-tab" id="pitcher-remove-slot" type="button">Remove Pitcher</button>
-            <div style="display:flex;align-items:center;padding:5px 10px;border:1px solid var(--border);color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase">2-5 slots · slot 1 can be League Average</div>
-          </div>
         </div>
         <div class="ctrl-group">
           <div class="ctrl-label">Time Window</div>
@@ -571,13 +566,15 @@
       <div class="panel">
         <div class="panel-title">
           <span>Pitcher Comparison</span>
-          <div style="display:flex;gap:6px">
-            <input type="text" id="seq-player-search" class="player-select" placeholder="Search pitcher..." list="seq-player-list" style="background:var(--bg);color:var(--text);min-width:220px" onchange="updateSequencePlayer()"/>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div id="pitcher-compare-controls" style="display:flex;flex-direction:column;gap:10px;min-width:min(100%, 760px);flex:1"></div>
+            <button class="window-tab" id="pitcher-add-slot" type="button">Add Pitcher</button>
+            <button class="window-tab" id="pitcher-remove-slot" type="button">Remove Pitcher</button>
+            <div style="display:flex;align-items:center;padding:7px 12px;border:1px solid var(--border);background:var(--bg);color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase">2-5 slots · slot 1 can be League Average</div>
             <datalist id="seq-player-list">
               <option value="F. Freeman"></option><option value="A. Judge"></option><option value="P. Goldschmidt"></option>
               <option value="C. Burnes"></option><option value="S. Alcantara"></option><option value="Z. Wheeler"></option>
             </datalist>
-            <div style="display:flex;align-items:center;padding:7px 12px;border:1px solid var(--border);background:var(--bg);color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase">Pitcher-only live view</div>
           </div>
         </div>
         <div class="stat-row" id="sequence-player-stats"></div>

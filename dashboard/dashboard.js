@@ -3,20 +3,18 @@ const API_BASE = "http://localhost:8000/api";
 const state = {
   count: { balls: null, strikes: null, outs: null, sort: "xwoba", batterHand: "all", pitcherHand: "all" },
   batter: { selectedId: null, window: "season", balls: 0, strikes: 0, team: "all" },
-  pitcher: {
+  pitcher: { selectedId: null, window: "season", balls: 0, strikes: 0, team: "all" },
+  leaderboard: { type: "batting", window: "season", balls: null, strikes: null, outs: null, sort: "xwoba", limit: 10, season: null, minPa: 25 },
+  sequence: {
+    pitches: [],
+    playerType: "pitcher",
     selectedId: null,
-    window: "season",
-    balls: 0,
-    strikes: 0,
-    team: "all",
     activeSlot: 1,
     slots: [
       { key: "league", mode: "league", id: null, label: "League Average" },
       { key: "pitcher-1", mode: "pitcher", id: null, label: "" },
     ],
   },
-  leaderboard: { type: "batting", window: "season", balls: null, strikes: null, outs: null, sort: "xwoba", limit: 10, season: null, minPa: 25 },
-  sequence: { pitches: [], playerType: "pitcher", selectedId: null },
   scope: { mode: "single", season: null, seasonStart: null, seasonEnd: null, seasonType: "both" },
   season: null,
   latestGameDate: null,
@@ -336,13 +334,13 @@ function normalizePitcherSlotValue(value) {
 }
 
 function getActivePitcherSlot() {
-  return state.pitcher.slots[state.pitcher.activeSlot] || state.pitcher.slots[0];
+  return state.sequence.slots[state.sequence.activeSlot] || state.sequence.slots[0];
 }
 
 function renderPitcherCompareControls() {
   const container = document.getElementById("pitcher-compare-controls");
   if (!container) return;
-  container.innerHTML = state.pitcher.slots.map((slot, index) => `
+  container.innerHTML = state.sequence.slots.map((slot, index) => `
     <div data-slot-index="${index}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <div style="min-width:54px;font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Slot ${index + 1}</div>
       <input
@@ -351,14 +349,14 @@ function renderPitcherCompareControls() {
         data-slot-index="${index}"
         value="${pitcherSlotLabel(slot)}"
         placeholder="${index === 0 ? "League Average or pitcher" : "Search pitcher..."}"
-        list="pitcher-list"
+        list="seq-player-list"
         style="background:var(--bg);color:var(--text);min-width:240px"
       />
-      <button class="window-tab pitcher-slot-focus${index === state.pitcher.activeSlot ? " active" : ""}" data-slot-index="${index}" type="button">Focus Details</button>
+      <button class="window-tab pitcher-slot-focus${index === state.sequence.activeSlot ? " active" : ""}" data-slot-index="${index}" type="button">Focus Details</button>
     </div>
   `).join("");
-  document.getElementById("pitcher-add-slot").disabled = state.pitcher.slots.length >= 5;
-  document.getElementById("pitcher-remove-slot").disabled = state.pitcher.slots.length <= 2;
+  document.getElementById("pitcher-add-slot").disabled = state.sequence.slots.length >= 5;
+  document.getElementById("pitcher-remove-slot").disabled = state.sequence.slots.length <= 2;
 }
 
 function mergePlayers(role, incoming) {
@@ -466,7 +464,8 @@ async function loadMetaContext() {
   const context = await apiFetch("/meta/context", "context");
   const hadScope = state.scope.season !== null || state.scope.seasonStart !== null || state.scope.seasonEnd !== null;
   const previousBatterId = state.batter.selectedId;
-  const previousPitcherSlots = state.pitcher.slots.map((slot) => ({ ...slot }));
+  const previousPitcherId = state.pitcher.selectedId;
+  const previousSequenceSlots = state.sequence.slots.map((slot) => ({ ...slot }));
   const previousSequenceId = state.sequence.selectedId;
   state.season = context.latest_season;
   state.latestGameDate = context.latest_game_date;
@@ -517,9 +516,14 @@ async function loadMetaContext() {
     document.getElementById("batter-select").value = playerOptionLabel(activeBatter);
   }
 
-  const preferredPitcherId = previousPitcherSlots.find((slot) => slot.mode === "pitcher" && slot.id)?.id || null;
-  const activePitcher = lookupPlayerById("pitcher", preferredPitcherId) || state.players.pitchers[0] || null;
-  state.pitcher.slots = previousPitcherSlots.map((slot, index) => {
+  const activePitcher = lookupPlayerById("pitcher", previousPitcherId) || state.players.pitchers[0] || null;
+  if (activePitcher) {
+    state.pitcher.selectedId = activePitcher.id;
+    const pitcherSelect = document.getElementById("pitcher-select");
+    if (pitcherSelect) pitcherSelect.value = playerOptionLabel(activePitcher);
+  }
+
+  state.sequence.slots = previousSequenceSlots.map((slot, index) => {
     if (slot.mode === "league") return { key: slot.key || `slot-${index}`, mode: "league", id: null, label: "League Average" };
     const resolved = lookupPlayerById("pitcher", slot.id) || (index === 1 ? state.players.pitchers[0] || null : null);
     return {
@@ -529,19 +533,18 @@ async function loadMetaContext() {
       label: resolved ? playerOptionLabel(resolved) : "",
     };
   });
-  if (!state.pitcher.slots.length) {
-    state.pitcher.slots = [
+  if (!state.sequence.slots.length) {
+    state.sequence.slots = [
       { key: "league", mode: "league", id: null, label: "League Average" },
       { key: "pitcher-1", mode: "pitcher", id: state.players.pitchers[0]?.id || null, label: state.players.pitchers[0] ? playerOptionLabel(state.players.pitchers[0]) : "" },
     ];
   }
-  state.pitcher.selectedId = state.pitcher.slots[state.pitcher.activeSlot]?.id || state.pitcher.slots.find((slot) => slot.id)?.id || null;
+  state.sequence.selectedId = state.sequence.slots[state.sequence.activeSlot]?.id || state.sequence.slots.find((slot) => slot.id)?.id || null;
   renderPitcherCompareControls();
 
   const activeSequencePitcher = lookupPlayerById("pitcher", previousSequenceId) || activePitcher;
   if (activeSequencePitcher) {
     state.sequence.selectedId = activeSequencePitcher.id;
-    document.getElementById("seq-player-search").value = playerOptionLabel(activeSequencePitcher);
   }
 }
 
@@ -846,20 +849,13 @@ async function fetchPitcherOverviewForSlot(slot) {
 }
 
 async function renderPitcherProfile() {
-  renderPitcherCompareControls();
+  const lookup = await ensurePlayerLookup("pitcher", document.getElementById("pitcher-select").value);
+  if (lookup) state.pitcher.selectedId = lookup.id;
+  if (!state.pitcher.selectedId) return;
   const pitcherTeamSelect = document.getElementById("pitcher-team-filter");
   if (pitcherTeamSelect) pitcherTeamSelect.value = state.pitcher.team || "all";
-  const slotProfiles = await Promise.all(
-    state.pitcher.slots.map(async (slot) => ({ slot, profile: await fetchPitcherOverviewForSlot(slot).catch(() => null) }))
-  );
-  const populated = slotProfiles.filter((entry) => entry.profile);
-  if (!populated.length) return;
-
-  const activeEntry = slotProfiles[state.pitcher.activeSlot]?.profile
-    ? slotProfiles[state.pitcher.activeSlot]
-    : populated[0];
-  const activeSlot = activeEntry.slot;
-  const profile = activeEntry.profile;
+  const profile = await fetchPitcherOverviewForSlot({ mode: "pitcher", id: state.pitcher.selectedId, label: playerLabel("pitcher", state.pitcher.selectedId) });
+  if (!profile) return;
   const seasonRows = aggregateSeasonRows(profile.seasons || [], [
     { key: "g", mode: "sum" },
     { key: "pitches", mode: "sum" },
@@ -867,26 +863,33 @@ async function renderPitcherProfile() {
     { key: "avg_spin", mode: { weightKey: "pitches" } },
     { key: "whiff_pct", mode: { weightKey: "pitches" } },
   ], "pitches");
-  state.pitcher.selectedId = activeSlot.mode === "pitcher" ? activeSlot.id : null;
 
   const container = document.getElementById("pitcher-stat-cards");
-  container.style.gridTemplateColumns = `repeat(${Math.max(2, Math.min(5, state.pitcher.slots.length))}, minmax(0, 1fr))`;
-  container.innerHTML = slotProfiles.map(({ slot, profile: slotProfile }, index) => `
-    <div class="stat-card" style="${index === state.pitcher.activeSlot ? "border-color:var(--accent2);" : ""}">
-      <div class="stat-label">${pitcherSlotLabel(slot)}</div>
-      ${slotProfile ? `
-        <div class="stat-value sm" style="color:var(--accent)">${fmtNum(slotProfile.summary.pitches, 0)}</div>
-        <div class="stat-delta">Pitches · Velo ${fmtNum(slotProfile.summary.avg_velo, 1)}${slotProfile.summary.team_display ? ` · ${slotProfile.summary.team_display}` : ""}</div>
-        <div class="stat-delta">Whiff ${fmtPct(slotProfile.summary.whiff_pct, 1)} · K ${fmtPct(slotProfile.summary.k_pct, 1)}</div>
-        <div class="stat-delta">xwOBA ${fmtRate(slotProfile.summary.xwoba_allowed)}</div>
-      ` : `
-        <div class="stat-value sm" style="color:var(--muted)">—</div>
-        <div class="stat-delta">Choose a pitcher for this slot</div>
-      `}
+  container.style.gridTemplateColumns = "repeat(4, minmax(0, 1fr))";
+  container.innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Pitches</div>
+      <div class="stat-value sm" style="color:var(--accent)">${fmtInt(profile.summary.pitches)}</div>
+      <div class="stat-delta">${playerLabel("pitcher", state.pitcher.selectedId)}${profile.summary.team_display ? ` · ${profile.summary.team_display}` : ""}</div>
     </div>
-  `).join("");
+    <div class="stat-card">
+      <div class="stat-label">Avg Velocity</div>
+      <div class="stat-value" style="color:var(--accent2)">${fmtNum(profile.summary.avg_velo, 1)}</div>
+      <div class="stat-delta">Spin ${fmtNum(profile.summary.avg_spin, 0)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Whiff / K</div>
+      <div class="stat-value sm" style="color:var(--accent3)">${fmtPct(profile.summary.whiff_pct, 1)} / ${fmtPct(profile.summary.k_pct, 1)}</div>
+      <div class="stat-delta">BB ${fmtPct(profile.summary.bb_pct, 1)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">xwOBA Allowed</div>
+      <div class="stat-value">${fmtRate(profile.summary.xwoba_allowed)}</div>
+      <div class="stat-delta">${fmtInt(profile.summary.g)} games</div>
+    </div>
+  `;
 
-  document.getElementById("pitcher-detail-title").textContent = `Season-by-Season Summary — ${pitcherSlotLabel(activeSlot)}`;
+  document.getElementById("pitcher-detail-title").textContent = `Season-by-Season Summary — ${playerLabel("pitcher", state.pitcher.selectedId)}`;
   document.getElementById("pitcher-season-thead").innerHTML = `<tr><th>Season</th><th>Team</th><th class="td-stat">G</th><th class="td-stat">Pitches</th><th class="td-stat">Velo</th><th class="td-stat">Spin</th><th class="td-stat">Whiff%</th></tr>`;
   document.getElementById("pitcher-season-body").innerHTML = seasonRows.map((row) => `
     <tr class="${row.rowType === "total" ? "summary-row" : ""}">
@@ -996,6 +999,7 @@ async function renderSequencePage() {
   document.getElementById("seq-pitch-count").textContent = state.sequence.pitches.length;
   document.getElementById("sequence-builder").innerHTML = state.sequence.pitches.map((pitch, index) => `<div class="filter-pill">${index + 1}. ${pitch}</div>`).join("");
   updateSequenceCountState();
+  renderPitcherCompareControls();
 
   const league = await apiFetch(`/sequences${buildQuery({ ...activeSeasonQuery("season"), min_occurrences: 3 })}`, "seq-league");
   const selectedOutcomeSummary = state.sequence.pitches.length
@@ -1028,47 +1032,48 @@ async function renderSequencePage() {
     </div>
   `;
 
-  const lookup = await ensurePlayerLookup("pitcher", document.getElementById("seq-player-search").value);
-  if (lookup) state.sequence.selectedId = lookup.id;
-  if (!state.sequence.selectedId) return;
+  const slotResults = await Promise.all(state.sequence.slots.map(async (slot) => {
+    if (slot.mode === "league") {
+      return { slot, summary: selectedOutcomeSummary, rows: league };
+    }
+    if (!slot.id) return { slot, summary: null, rows: [] };
+    const [summary, rows] = await Promise.all([
+      state.sequence.pitches.length
+        ? apiFetch(`/sequences/outcomes${buildQuery({
+          ...activeSeasonQuery("season"),
+          outcomes: state.sequence.pitches.join(","),
+          pitcher_id: slot.id,
+        })}`, `seq-player-outcomes-${slot.id}`).catch(() => null)
+        : Promise.resolve(null),
+      apiFetch(`/pitcher/${slot.id}/sequences${buildQuery({ ...activeSeasonQuery("season"), min_occurrences: 2 })}`, `seq-player-${slot.id}`).catch(() => []),
+    ]);
+    return { slot, summary, rows };
+  }));
 
-  const pitcherOutcomeSummary = state.sequence.pitches.length
-    ? await apiFetch(`/sequences/outcomes${buildQuery({
-      ...activeSeasonQuery("season"),
-      outcomes: state.sequence.pitches.join(","),
-      pitcher_id: state.sequence.selectedId,
-    })}`, "seq-player-outcomes")
-    : null;
-  const playerRows = await apiFetch(`/pitcher/${state.sequence.selectedId}/sequences${buildQuery({ ...activeSeasonQuery("season"), min_occurrences: 2 })}`, "seq-player");
-  const topRows = playerRows.slice(0, 10);
-  const bottomRows = [...playerRows].sort((a, b) => Number(a.whiff_pct || 0) - Number(b.whiff_pct || 0)).slice(0, 10);
-  const top = topRows[0];
-  const selectedPitcherOccurrences = pitcherOutcomeSummary?.occurrences ?? 0;
-  const selectedPitcherWhiff = pitcherOutcomeSummary?.whiff_pct ?? null;
-  const selectedPitcherK = pitcherOutcomeSummary?.k_pct ?? null;
+  const activeResult = slotResults[state.sequence.activeSlot] || slotResults.find((entry) => entry.rows.length || entry.summary) || slotResults[0];
+  const activeRows = activeResult?.rows || [];
+  const topRows = activeRows.slice(0, 10);
+  const bottomRows = [...activeRows].sort((a, b) => Number(a.whiff_pct || 0) - Number(b.whiff_pct || 0)).slice(0, 10);
 
-  document.getElementById("sequence-player-stats").innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">Pitcher</div>
-      <div class="stat-value sm" style="color:var(--accent)">${playerLabel("pitcher", state.sequence.selectedId)}</div>
-      <div class="stat-delta">${state.sequence.pitches.length ? `${fmtNum(selectedPitcherOccurrences, 0)} occurrences of selected sequence` : `${fmtNum(playerRows.length, 0)} tracked sequence patterns`}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">${state.sequence.pitches.length ? "Selected Sequence" : "Best Sequence"}</div>
-      <div class="stat-value sm" style="color:var(--accent2)">${state.sequence.pitches.length ? (pitcherOutcomeSummary?.sequence || "—") : (top?.sequence || "—")}</div>
-      <div class="stat-delta">Whiff ${fmtPct(state.sequence.pitches.length ? selectedPitcherWhiff : top?.whiff_pct, 1)}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">K Rate</div>
-      <div class="stat-value" style="color:var(--accent3)">${fmtPct(state.sequence.pitches.length ? selectedPitcherK : top?.k_pct, 1)}</div>
-      <div class="stat-delta">${state.sequence.pitches.length ? "selected sequence finish rate" : "top sequence finish rate"}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Occurrences</div>
-      <div class="stat-value">${fmtNum(state.sequence.pitches.length ? selectedPitcherOccurrences : top?.occurrences, 0)}</div>
-      <div class="stat-delta">${state.sequence.pitches.length ? "for selected sequence" : "for best sequence"}</div>
-    </div>
-  `;
+  document.getElementById("sequence-player-stats").style.gridTemplateColumns = `repeat(${Math.max(2, Math.min(5, state.sequence.slots.length))}, minmax(0, 1fr))`;
+  document.getElementById("sequence-player-stats").innerHTML = slotResults.map(({ slot, summary, rows }, index) => {
+    const best = rows[0] || null;
+    const occurrences = state.sequence.pitches.length ? summary?.occurrences : best?.occurrences;
+    const whiff = state.sequence.pitches.length ? summary?.whiff_pct : best?.whiff_pct;
+    const kRate = state.sequence.pitches.length ? summary?.k_pct : best?.k_pct;
+    const label = slot.mode === "league" ? "League Average" : pitcherSlotLabel(slot);
+    const line = state.sequence.pitches.length
+      ? `${fmtInt(occurrences)} occurrences of selected sequence`
+      : `${fmtInt(rows.length)} tracked sequence patterns`;
+    return `
+      <div class="stat-card" style="${index === state.sequence.activeSlot ? "border-color:var(--accent2);" : ""}">
+        <div class="stat-label">${label}</div>
+        <div class="stat-value sm" style="color:var(--accent)">${state.sequence.pitches.length ? (summary?.sequence || "—") : (best?.sequence || "—")}</div>
+        <div class="stat-delta">${line}</div>
+        <div class="stat-delta">Whiff ${fmtPct(whiff, 1)} · K ${fmtPct(kRate, 1)}</div>
+      </div>
+    `;
+  }).join("");
 
   const renderTable = (rows) => rows.map((row, index) => `
     <tr>
@@ -1208,7 +1213,7 @@ function toggleSequenceType() {
 }
 
 async function setPitcherSlotValue(index, rawValue) {
-  const slot = state.pitcher.slots[index];
+  const slot = state.sequence.slots[index];
   if (!slot) return;
   const value = normalizePitcherSlotValue(rawValue);
   if (!value) {
@@ -1216,16 +1221,16 @@ async function setPitcherSlotValue(index, rawValue) {
     slot.id = null;
     slot.label = index === 0 ? "League Average" : "";
     renderPitcherCompareControls();
-    await renderPitcherProfile();
+    await renderSequencePage();
     return;
   }
   if (index === 0 && value === "League Average") {
     slot.mode = "league";
     slot.id = null;
     slot.label = "League Average";
-    state.pitcher.activeSlot = 0;
+    state.sequence.activeSlot = 0;
     renderPitcherCompareControls();
-    await renderPitcherProfile();
+    await renderSequencePage();
     return;
   }
   const lookup = await ensurePlayerLookup("pitcher", value);
@@ -1233,25 +1238,26 @@ async function setPitcherSlotValue(index, rawValue) {
   slot.mode = "pitcher";
   slot.id = lookup.id;
   slot.label = playerOptionLabel(lookup);
-  if (state.pitcher.activeSlot === index || index === 1) {
-    state.pitcher.activeSlot = index;
+  if (state.sequence.activeSlot === index || index === 1) {
+    state.sequence.activeSlot = index;
   }
+  state.sequence.selectedId = lookup.id;
   renderPitcherCompareControls();
-  await renderPitcherProfile();
+  await renderSequencePage();
 }
 
 function addPitcherComparisonSlot() {
-  if (state.pitcher.slots.length >= 5) return;
-  state.pitcher.slots.push({ key: `pitcher-${Date.now()}`, mode: "pitcher", id: null, label: "" });
+  if (state.sequence.slots.length >= 5) return;
+  state.sequence.slots.push({ key: `pitcher-${Date.now()}`, mode: "pitcher", id: null, label: "" });
   renderPitcherCompareControls();
 }
 
 function removePitcherComparisonSlot() {
-  if (state.pitcher.slots.length <= 2) return;
-  state.pitcher.slots.pop();
-  state.pitcher.activeSlot = Math.min(state.pitcher.activeSlot, state.pitcher.slots.length - 1);
+  if (state.sequence.slots.length <= 2) return;
+  state.sequence.slots.pop();
+  state.sequence.activeSlot = Math.min(state.sequence.activeSlot, state.sequence.slots.length - 1);
   renderPitcherCompareControls();
-  renderPitcherProfile();
+  renderSequencePage();
 }
 
 async function refreshData() {
@@ -1272,7 +1278,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   bindPlayerSearch("batter-select", "batter");
   bindPlayerSearch("pitcher-select", "pitcher");
-  bindPlayerSearch("seq-player-search", "pitcher");
 
   buildCountGrid("count-grid", state.count, renderCountPage);
   buildCountGrid("lb-count-grid", state.leaderboard, () => {
@@ -1352,9 +1357,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("pitcher-compare-controls").addEventListener("click", (event) => {
     const button = event.target.closest(".pitcher-slot-focus");
     if (!button) return;
-    state.pitcher.activeSlot = Number(button.dataset.slotIndex);
+    state.sequence.activeSlot = Number(button.dataset.slotIndex);
     renderPitcherCompareControls();
-    renderPitcherProfile();
+    renderSequencePage();
   });
 
   await renderCountPage();
