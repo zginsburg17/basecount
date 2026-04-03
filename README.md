@@ -173,6 +173,7 @@ Important:
 - partial data for a season does not count as complete history coverage
 - spring training is excluded from ingestion
 - regular season and postseason are retained
+- if a Statcast multi-day response is malformed, the ETL automatically retries and splits the date range into smaller windows
 
 ## Standard Workflow
 

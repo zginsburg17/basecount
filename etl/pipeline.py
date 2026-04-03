@@ -7,6 +7,7 @@ import argparse
 import duckdb
 import pandas as pd
 from pybaseball import statcast, playerid_reverse_lookup
+from pandas.errors import ParserError
 from datetime import date, datetime, timedelta
 import json
 import logging
@@ -478,11 +479,37 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
 def init_db(db_path: str = "baseball.duckdb") -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(db_path)
     con.execute(SCHEMA_SQL)
-    con.execute("ALTER TABLE games ADD COLUMN IF NOT EXISTS game_type VARCHAR")
-    con.execute("ALTER TABLE pitches ADD COLUMN IF NOT EXISTS game_type VARCHAR")
-    con.execute("ALTER TABLE at_bats ADD COLUMN IF NOT EXISTS game_type VARCHAR")
+    ensure_optional_column(con, "games", "game_type", "VARCHAR")
+    ensure_optional_column(con, "pitches", "game_type", "VARCHAR")
+    ensure_optional_column(con, "at_bats", "game_type", "VARCHAR")
     log.info(f"Database initialized at {db_path}")
     return con
+
+
+def table_columns(con: duckdb.DuckDBPyConnection, table_name: str) -> set[str]:
+    rows = con.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+    return {row[1] for row in rows}
+
+
+def has_column(con: duckdb.DuckDBPyConnection, table_name: str, column_name: str) -> bool:
+    return column_name in table_columns(con, table_name)
+
+
+def ensure_optional_column(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+) -> None:
+    if has_column(con, table_name, column_name):
+        return
+    try:
+        con.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+    except Exception as exc:
+        log.warning(
+            f"Could not add optional column {table_name}.{column_name}. "
+            f"Continuing with existing schema. Error: {exc}"
+        )
 
 
 def next_ingestion_run_id(con: duckdb.DuckDBPyConnection) -> int:
@@ -490,6 +517,69 @@ def next_ingestion_run_id(con: duckdb.DuckDBPyConnection) -> int:
         "SELECT COALESCE(MAX(run_id), 0) + 1 FROM ingestion_log"
     ).fetchone()[0]
     return int(run_id)
+
+
+def fetch_statcast_with_fallback(
+    start: date,
+    end: date,
+    *,
+    delay: float = 2.0,
+    retry_count: int = 2,
+) -> pd.DataFrame:
+    """
+    Fetch a Statcast range and automatically split it into smaller windows if
+    pybaseball returns malformed CSV or another transient parsing/network error.
+    """
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+    log.info(f"Fetching Statcast data: {start_str} → {end_str}")
+    time.sleep(delay)
+
+    last_error: Optional[Exception] = None
+    for attempt in range(1, retry_count + 1):
+        try:
+            raw = statcast(start_dt=start_str, end_dt=end_str)
+            return raw if raw is not None else pd.DataFrame()
+        except (ParserError, ValueError) as exc:
+            last_error = exc
+            log.warning(
+                f"Statcast response was malformed for {start_str} → {end_str} "
+                f"(attempt {attempt}/{retry_count}): {exc}"
+            )
+        except Exception as exc:
+            last_error = exc
+            log.warning(
+                f"Statcast request failed for {start_str} → {end_str} "
+                f"(attempt {attempt}/{retry_count}): {exc}"
+            )
+        time.sleep(min(3.0 * attempt, 10.0))
+
+    if start == end:
+        raise RuntimeError(
+            f"Statcast request failed for single day {start_str} after {retry_count} attempts: {last_error}"
+        )
+
+    midpoint = start + timedelta(days=(end - start).days // 2)
+    left_end = midpoint
+    right_start = midpoint + timedelta(days=1)
+
+    log.warning(
+        f"Splitting Statcast range {start_str} → {end_str} into "
+        f"{start.strftime('%Y-%m-%d')} → {left_end.strftime('%Y-%m-%d')} and "
+        f"{right_start.strftime('%Y-%m-%d')} → {end.strftime('%Y-%m-%d')}"
+    )
+
+    frames = []
+    left = fetch_statcast_with_fallback(start, left_end, delay=delay, retry_count=retry_count)
+    if left is not None and not left.empty:
+        frames.append(left)
+    right = fetch_statcast_with_fallback(right_start, end, delay=delay, retry_count=retry_count)
+    if right is not None and not right.empty:
+        frames.append(right)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def mark_season_backfill_started(
@@ -565,10 +655,11 @@ def load_date_range(
     Pull Statcast data for a date range, transform, and upsert into DuckDB.
     Returns total rows loaded.
     """
-    log.info(f"Fetching Statcast data: {start_date} → {end_date}")
-    time.sleep(delay)  # be polite to Baseball Savant
-
-    raw = statcast(start_dt=start_date, end_dt=end_date)
+    raw = fetch_statcast_with_fallback(
+        datetime.strptime(start_date, "%Y-%m-%d").date(),
+        datetime.strptime(end_date, "%Y-%m-%d").date(),
+        delay=delay,
+    )
     if raw is None or raw.empty:
         log.warning("No data returned for this range.")
         return 0
@@ -590,16 +681,20 @@ def load_date_range(
     log.info(f"  Players upserted: {len(player_ids)}")
 
     # --- Load games (must come before pitches due to FK constraint) ---
-    game_cols = [c for c in ["game_pk", "game_date", "home_team", "away_team", "game_type"] if c in df.columns]
+    games_table_cols = table_columns(con, "games")
+    game_cols = [c for c in ["game_pk", "game_date", "home_team", "away_team", "game_type"] if c in df.columns and c in games_table_cols]
     games_df = df[game_cols].drop_duplicates("game_pk").copy()
     games_df["venue"] = None
     games_df["season"] = pd.to_datetime(games_df["game_date"]).dt.year
-    if "game_type" not in games_df.columns:
-        games_df["game_type"] = None
-    con.execute("INSERT OR REPLACE INTO games (game_pk, game_date, home_team, away_team, venue, game_type, season) SELECT game_pk, game_date, home_team, away_team, venue, game_type, season FROM games_df")
+    if "venue" in games_table_cols and "venue" not in games_df.columns:
+        games_df["venue"] = None
+    game_insert_cols = [col for col in ["game_pk", "game_date", "home_team", "away_team", "venue", "game_type", "season"] if col in games_df.columns and col in games_table_cols]
+    game_col_list = ", ".join(game_insert_cols)
+    con.execute(f"INSERT OR REPLACE INTO games ({game_col_list}) SELECT {game_col_list} FROM games_df")
     log.info(f"  Games upserted: {len(games_df)}")
 
     # --- Load pitches ---
+    pitches_table_cols = table_columns(con, "pitches")
     pitch_cols = [c for c in df.columns if c in [
         "pitch_id", "game_pk", "at_bat_number", "pitch_number",
         "pitcher_id", "batter_id", "pitcher_team", "batter_team",
@@ -618,7 +713,7 @@ def load_date_range(
         "estimated_woba_using_speedangle",
         "woba_value", "woba_denom", "launch_speed_angle",
         "game_date", "season",
-    ]]
+    ] and c in pitches_table_cols]
     pitches_df = df[pitch_cols].drop_duplicates("pitch_id")
 
     col_list = ", ".join(pitch_cols)
@@ -627,7 +722,10 @@ def load_date_range(
 
     # --- Load at_bats rollup ---
     ab_df = build_at_bat_rollup(df)
-    con.execute("INSERT OR REPLACE INTO at_bats SELECT * FROM ab_df")
+    at_bats_table_cols = table_columns(con, "at_bats")
+    ab_insert_cols = [col for col in ab_df.columns if col in at_bats_table_cols]
+    ab_col_list = ", ".join(ab_insert_cols)
+    con.execute(f"INSERT OR REPLACE INTO at_bats ({ab_col_list}) SELECT {ab_col_list} FROM ab_df")
     log.info(f"  At-bats upserted: {len(ab_df)}")
 
     # --- Log run ---

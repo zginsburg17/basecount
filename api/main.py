@@ -37,7 +37,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = os.getenv("DB_PATH", "baseball.duckdb")
+REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
+DEFAULT_DB_PATH = os.path.join(REPO_ROOT, "baseball.duckdb")
+DB_PATH = os.getenv("DB_PATH", DEFAULT_DB_PATH)
 
 HIT_EVENTS = ("single", "double", "triple", "home_run")
 WALK_EVENTS = ("walk", "intent_walk")
@@ -52,10 +54,73 @@ def get_con():
     return duckdb.connect(DB_PATH, read_only=True)
 
 
+@app.on_event("startup")
+def on_startup():
+    status = db_status()
+    if status["ok"]:
+        print(f"[api] Connected to DuckDB at {status['db_path']} with {status['pitch_rows']} pitch rows")
+    else:
+        print(f"[api] Startup warning: {status}")
+
+
+def db_status() -> dict:
+    if not os.path.exists(DB_PATH):
+        return {
+            "ok": False,
+            "db_path": DB_PATH,
+            "error": "Database file not found.",
+        }
+
+    try:
+        con = get_con()
+        pitch_rows = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
+        seasons = [
+            row[0]
+            for row in con.execute(
+                "SELECT DISTINCT season FROM pitches WHERE season IS NOT NULL ORDER BY season DESC"
+            ).fetchall()
+        ]
+        con.close()
+        return {
+            "ok": True,
+            "db_path": DB_PATH,
+            "pitch_rows": pitch_rows,
+            "seasons": seasons,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "db_path": DB_PATH,
+            "error": str(exc),
+        }
+
+
 def df_to_json(df: pd.DataFrame) -> list[dict]:
     normalized = df.replace([float("inf"), float("-inf")], pd.NA)
     normalized = normalized.astype(object).where(pd.notna(normalized), None)
     return normalized.to_dict(orient="records")
+
+
+@app.get("/")
+def api_root():
+    status = db_status()
+    return {
+        "name": "Baseball Analytics API",
+        "version": app.version,
+        "status": "ok" if status["ok"] else "degraded",
+        "db": status,
+        "docs_url": "/docs",
+        "meta_context_url": "/api/meta/context",
+        "health_url": "/api/health",
+    }
+
+
+@app.get("/api/health")
+def api_health():
+    status = db_status()
+    if not status["ok"]:
+        raise HTTPException(status_code=503, detail=status)
+    return status
 
 
 def latest_data_context(con: duckdb.DuckDBPyConnection) -> dict:
@@ -1140,4 +1205,4 @@ def api_outcome_matrix_legacy(season: Optional[int] = None):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8000)

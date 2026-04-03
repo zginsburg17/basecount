@@ -154,7 +154,7 @@ case "$MODE" in
 
     api)
         echo "Starting API server on http://localhost:8000 ..."
-        python api/main.py
+        python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
         ;;
 
     all)
@@ -163,7 +163,7 @@ case "$MODE" in
         run_etl ensure-history --chunk-days "$CHUNK_DAYS"
         echo ""
         echo "Starting API server on http://localhost:8000 ..."
-        python api/main.py
+        python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
         ;;
 
     help|-h|--help)
