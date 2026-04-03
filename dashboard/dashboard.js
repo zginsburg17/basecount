@@ -450,12 +450,16 @@ function syncScopeControls() {
   const singleInput = document.getElementById("lb-season");
   const rangeStart = document.getElementById("lb-season-start");
   const rangeEnd = document.getElementById("lb-season-end");
+  const singleMode = mode === "single";
+  const rangeMode = mode === "range";
 
-  singleWrap.style.display = mode === "single" ? "flex" : "none";
-  rangeWrap.style.display = mode === "range" ? "flex" : "none";
-  singleInput.disabled = mode !== "single";
-  rangeStart.disabled = mode !== "range";
-  rangeEnd.disabled = mode !== "range";
+  singleWrap.hidden = !singleMode;
+  rangeWrap.hidden = !rangeMode;
+  singleWrap.style.display = singleMode ? "flex" : "none";
+  rangeWrap.style.display = rangeMode ? "flex" : "none";
+  singleInput.disabled = !singleMode;
+  rangeStart.disabled = !rangeMode;
+  rangeEnd.disabled = !rangeMode;
 
   const label = activeSeasonLabel("season");
   document.getElementById("season-scope-label").textContent = label;
