@@ -798,6 +798,7 @@ def pitcher_summary_query(where_sql: str) -> str:
 
 @app.get("/api/meta/context")
 def api_meta_context():
+    """Full data context: loaded seasons, completeness, player list, and team list."""
     con = get_con()
     context = latest_data_context(con)
     coverage = history_completeness(con)
@@ -851,6 +852,7 @@ def api_meta_context():
 
 @app.get("/api/meta/coverage")
 def api_meta_coverage():
+    """Season completeness and player-name coverage summary."""
     con = get_con()
     return {
         **history_completeness(con),
@@ -880,6 +882,7 @@ def api_pitch_state_league(
     p_throws: Optional[str] = Query(None, pattern="^(L|R)$"),
     min_pitches: int = Query(1, ge=1),
 ):
+    """League-wide pitch outcome rates for a given count / outs / handedness state."""
     con = get_con()
     where_sql = build_pitch_state_filters(
         "s",
@@ -933,6 +936,7 @@ def api_pitch_state_player(
     p_throws: Optional[str] = Query(None, pattern="^(L|R)$"),
     min_pitches: int = Query(1, ge=1),
 ):
+    """Individual player pitch outcome rates, from the batter or pitcher perspective."""
     con = get_con()
     where_sql = build_pitch_state_filters(
         "s",
@@ -989,6 +993,10 @@ def api_predict_next_pitch(
     prev_pitch_type: str = Query(...),
     min_transitions: int = Query(1, ge=1),
 ):
+    """
+    Next-pitch probability distribution given the current count and previous pitch type.
+    Returns transition probabilities from the pre-materialized pitch_transition_summary table.
+    """
     con = get_con()
     where_sql = build_pitch_state_filters(
         "t",
@@ -1039,6 +1047,7 @@ def api_predict_outcome_by_pitch(
     pitch_type: Optional[str] = None,
     min_pitches: int = Query(1, ge=1),
 ):
+    """Expected outcomes if a specific pitch type is thrown in the current count state."""
     con = get_con()
     where_sql = build_pitch_state_filters(
         "s",
@@ -1187,6 +1196,7 @@ def api_count_zone_map(
     stand: Optional[str] = None,
     p_throws: Optional[str] = None,
 ):
+    """Pitch location zone frequency map (3×3 grid, zones 1–9) for a given count state."""
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
     game_types = season_type_to_game_types(season_type)
@@ -1232,6 +1242,10 @@ def api_batter_overview(
     window: str = Query("season", pattern="^(season|career|last7)$"),
     team: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
+    """
+    Comprehensive batter profile: career/season summary, per-season splits,
+    count-state performance, and zone contact rate map.
+    """
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
     game_types = season_type_to_game_types(season_type)
@@ -1395,6 +1409,10 @@ def api_pitcher_overview(
     window: str = Query("season", pattern="^(season|career|last7)$"),
     team: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
+    """
+    Comprehensive pitcher profile: career/season summary, per-season splits,
+    pitch usage by count, and zone location map.
+    """
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
     game_types = season_type_to_game_types(season_type)
@@ -1527,6 +1545,7 @@ def api_pitching_overview(
     season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
 ):
+    """League-wide pitching summary: aggregate velo, spin, whiff, and xwOBA allowed."""
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
     game_types = season_type_to_game_types(season_type)
@@ -1609,6 +1628,10 @@ def api_team_overview(
     season_type: str = Query("regular", pattern="^(regular|postseason|both)$"),
     window: str = Query("season", pattern="^(season|career|last7)$"),
 ):
+    """
+    Team profile: batting and pitching aggregates plus per-player leaderboards
+    for both the offense and the pitching staff.
+    """
     team_code = team_code.upper()
     con = get_con()
     resolved = resolve_window(con, window, season, season_start, season_end)
