@@ -450,15 +450,41 @@ def player_name_expr(prefix: str, id_col: str) -> str:
     return f"COALESCE(pl.full_name, '{prefix} #' || CAST({id_col} AS VARCHAR))"
 
 
-def team_expr(prefix: str, id_col: str, team_col: str) -> str:
+def derived_batter_team_expr(pitch_alias: str, game_alias: str = "g") -> str:
     return f"""
         COALESCE(
-            pl.team,
+            NULLIF({pitch_alias}.batter_team, ''),
+            CASE
+                WHEN {pitch_alias}.inning_half = 'Top' THEN {game_alias}.away_team
+                ELSE {game_alias}.home_team
+            END
+        )
+    """
+
+
+def derived_pitcher_team_expr(pitch_alias: str, game_alias: str = "g") -> str:
+    return f"""
+        COALESCE(
+            NULLIF({pitch_alias}.pitcher_team, ''),
+            CASE
+                WHEN {pitch_alias}.inning_half = 'Top' THEN {game_alias}.home_team
+                ELSE {game_alias}.away_team
+            END
+        )
+    """
+
+
+def team_expr(prefix: str, id_col: str, team_col: str) -> str:
+    derived = derived_batter_team_expr("px", "gm") if team_col == "batter_team" else derived_pitcher_team_expr("px", "gm")
+    return f"""
+        COALESCE(
+            NULLIF(pl.team, ''),
             (
-                SELECT {team_col}
+                SELECT {derived}
                 FROM pitches px
+                LEFT JOIN games gm ON gm.game_pk = px.game_pk
                 WHERE px.{id_col} = {prefix}.{id_col}
-                  AND {team_col} IS NOT NULL
+                  AND {derived} IS NOT NULL
                 ORDER BY px.game_date DESC
                 LIMIT 1
             )
@@ -778,7 +804,7 @@ def api_meta_context():
     name_coverage = player_name_completeness(con)
     teams = available_teams(con)
     batter_name = player_name_expr("Batter", "ab.batter_id")
-    pitcher_name = player_name_expr("Pitcher", "p.pitcher_id")
+    pitcher_name = player_name_expr("Pitcher", "fp.pitcher_id")
 
     batters = con.execute(
         f"""
@@ -1220,14 +1246,15 @@ def api_batter_overview(
         player_col="batter_id",
         player_id=batter_id,
     )
-    team_filter_sql = f"AND batter_team = {sql_quote(team)}" if team else ""
+    team_filter_sql = f"AND {derived_batter_team_expr('p', 'g')} = {sql_quote(team)}" if team else ""
     summary = con.execute(
         f"""
         WITH pitch_ab_team AS (
             SELECT
-                CONCAT(game_pk, '_', at_bat_number) AS at_bat_id,
-                any_value(batter_team) AS batter_team
-            FROM pitches
+                CONCAT(p.game_pk, '_', p.at_bat_number) AS at_bat_id,
+                any_value({derived_batter_team_expr('p', 'g')}) AS batter_team
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
             WHERE {pitch_where}
               {team_filter_sql}
             GROUP BY 1
@@ -1266,9 +1293,10 @@ def api_batter_overview(
         f"""
         WITH pitch_ab_team AS (
             SELECT
-                CONCAT(game_pk, '_', at_bat_number) AS at_bat_id,
-                any_value(batter_team) AS batter_team
-            FROM pitches
+                CONCAT(p.game_pk, '_', p.at_bat_number) AS at_bat_id,
+                any_value({derived_batter_team_expr('p', 'g')}) AS batter_team
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
             WHERE {pitch_where}
               {team_filter_sql}
             GROUP BY 1
@@ -1308,7 +1336,9 @@ def api_batter_overview(
                 p.balls,
                 p.strikes
             FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
             WHERE {build_filters('p', season=resolved['season'], season_start=resolved['season_start'], season_end=resolved['season_end'], start_date=resolved['start_date'], end_date=resolved['end_date'], game_types=game_types, player_col='batter_id', player_id=batter_id)}
+              {team_filter_sql}
         )
         SELECT
             cp.balls,
@@ -1334,7 +1364,9 @@ def api_batter_overview(
                 0
             )::INTEGER AS contact_rate
         FROM pitches p
+        LEFT JOIN games g ON g.game_pk = p.game_pk
         WHERE {build_filters('p', season=resolved['season'], season_start=resolved['season_start'], season_end=resolved['season_end'], start_date=resolved['start_date'], end_date=resolved['end_date'], game_types=game_types, player_col='batter_id', player_id=batter_id)}
+          {team_filter_sql}
           AND zone BETWEEN 1 AND 9
         GROUP BY zone
         ORDER BY zone
@@ -1342,8 +1374,11 @@ def api_batter_overview(
     ).fetchall()
 
     return {
-        "summary": df_to_json(summary)[0],
-        "seasons": df_to_json(seasons_df),
+        "summary": {**df_to_json(summary)[0], "team_display": df_to_json(summary)[0].get("team_display") or team},
+        "seasons": [
+            {**row, "team": row.get("team") or team}
+            for row in df_to_json(seasons_df)
+        ],
         "team_filter": team,
         "counts": df_to_json(counts_df),
         "zones": zone_matrix_from_rows(zone_rows),
@@ -1374,13 +1409,14 @@ def api_pitcher_overview(
         player_col="pitcher_id",
         player_id=pitcher_id,
     )
-    team_filter_sql = f"AND p.pitcher_team = {sql_quote(team)}" if team else ""
+    team_filter_sql = f"AND {derived_pitcher_team_expr('p', 'g')} = {sql_quote(team)}" if team else ""
 
     summary = con.execute(
         f"""
         WITH filtered_pitches AS (
-            SELECT *
+            SELECT p.*, {derived_pitcher_team_expr('p', 'g')} AS derived_pitcher_team
             FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
             WHERE {pitch_where}
               {team_filter_sql}
         ),
@@ -1408,7 +1444,7 @@ def api_pitcher_overview(
             (SELECT ROUND(AVG(xwoba), 3) FROM pitcher_abs) AS xwoba_allowed,
             (SELECT ROUND(SUM(CASE WHEN final_event IN {STRIKEOUT_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) FROM pitcher_abs) AS k_pct,
             (SELECT ROUND(SUM(CASE WHEN final_event IN {WALK_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) FROM pitcher_abs) AS bb_pct,
-            (SELECT string_agg(DISTINCT pitcher_team, '/' ORDER BY pitcher_team) FROM filtered_pitches) AS team_display
+            (SELECT string_agg(DISTINCT derived_pitcher_team, '/' ORDER BY derived_pitcher_team) FROM filtered_pitches) AS team_display
         """
     ).df()
     if summary.empty or summary.iloc[0]["pitches"] in (None, 0):
@@ -1418,17 +1454,18 @@ def api_pitcher_overview(
         f"""
         SELECT
             p.season,
-            p.pitcher_team AS team,
+            {derived_pitcher_team_expr('p', 'g')} AS team,
             COUNT(DISTINCT p.game_pk) AS g,
             COUNT(*) AS pitches,
             ROUND(AVG(p.release_speed), 1) AS avg_velo,
             ROUND(AVG(p.release_spin_rate), 0) AS avg_spin,
             ROUND(SUM(CASE WHEN p.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS whiff_pct
         FROM pitches p
+        LEFT JOIN games g ON g.game_pk = p.game_pk
         WHERE p.pitcher_id = {pitcher_id}
           AND p.game_type IN ({', '.join(sql_quote(game_type) for game_type in game_types)})
           {team_filter_sql}
-        GROUP BY p.season, p.pitcher_team
+        GROUP BY p.season, team
         ORDER BY p.season DESC, team
         """
     ).df()
@@ -1445,7 +1482,9 @@ def api_pitcher_overview(
                 ROUND(AVG(p.release_speed), 1) AS avg_velo,
                 ROUND(SUM(CASE WHEN p.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS whiff_pct
             FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
             WHERE {pitch_where}
+              {team_filter_sql}
               AND p.pitch_type IS NOT NULL
             GROUP BY p.balls, p.strikes, p.pitch_type
         )
@@ -1459,7 +1498,9 @@ def api_pitcher_overview(
         f"""
         SELECT zone, COUNT(*) AS pitches
         FROM pitches p
+        LEFT JOIN games g ON g.game_pk = p.game_pk
         WHERE {pitch_where}
+          {team_filter_sql}
           AND zone BETWEEN 1 AND 9
         GROUP BY zone
         ORDER BY zone
@@ -1467,8 +1508,11 @@ def api_pitcher_overview(
     ).fetchall()
 
     return {
-        "summary": df_to_json(summary)[0],
-        "seasons": df_to_json(seasons_df),
+        "summary": {**df_to_json(summary)[0], "team_display": df_to_json(summary)[0].get("team_display") or team},
+        "seasons": [
+            {**row, "team": row.get("team") or team}
+            for row in df_to_json(seasons_df)
+        ],
         "team_filter": team,
         "counts": df_to_json(counts_df),
         "zones": zone_matrix_from_rows(zone_rows),
@@ -1553,6 +1597,211 @@ def api_pitching_overview(
         "seasons": df_to_json(seasons_df),
         "counts": df_to_json(counts_df),
         "zones": zone_matrix_from_rows(zone_rows),
+    }
+
+
+@app.get("/api/team/{team_code}/overview")
+def api_team_overview(
+    team_code: str,
+    season: Optional[int] = None,
+    season_start: Optional[int] = Query(None, ge=2015),
+    season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("regular", pattern="^(regular|postseason|both)$"),
+    window: str = Query("season", pattern="^(season|career|last7)$"),
+):
+    team_code = team_code.upper()
+    con = get_con()
+    resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
+
+    pitch_where = build_filters(
+        "p",
+        season=resolved["season"],
+        season_start=resolved["season_start"],
+        season_end=resolved["season_end"],
+        start_date=resolved["start_date"],
+        end_date=resolved["end_date"],
+        game_types=game_types,
+    )
+    batting_where = build_filters(
+        "ab",
+        season=resolved["season"],
+        season_start=resolved["season_start"],
+        season_end=resolved["season_end"],
+        start_date=resolved["start_date"],
+        end_date=resolved["end_date"],
+        game_types=game_types,
+    )
+    summary = con.execute(
+        f"""
+        WITH team_games AS (
+            SELECT COUNT(DISTINCT p.game_pk) AS games
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
+            WHERE {pitch_where}
+              AND (
+                {derived_batter_team_expr('p', 'g')} = {sql_quote(team_code)}
+                OR {derived_pitcher_team_expr('p', 'g')} = {sql_quote(team_code)}
+              )
+        ),
+        pitch_ab_team AS (
+            SELECT
+                CONCAT(p.game_pk, '_', p.at_bat_number) AS at_bat_id,
+                any_value({derived_batter_team_expr('p', 'g')}) AS batter_team
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
+            WHERE {pitch_where}
+              AND {derived_batter_team_expr('p', 'g')} = {sql_quote(team_code)}
+            GROUP BY 1
+        ),
+        batting AS (
+            SELECT
+                COUNT(*) AS pa,
+                SUM(CASE WHEN ab.final_event NOT IN {AB_EXCLUDED_EVENTS} THEN 1 ELSE 0 END) AS at_bats,
+                SUM(CASE WHEN ab.final_event IN {HIT_EVENTS} THEN 1 ELSE 0 END) AS hits,
+                SUM(CASE WHEN ab.final_event = 'home_run' THEN 1 ELSE 0 END) AS hr,
+                SUM(CASE WHEN ab.final_event IN {WALK_EVENTS} THEN 1 ELSE 0 END) AS walks,
+                SUM(CASE WHEN ab.final_event IN {STRIKEOUT_EVENTS} THEN 1 ELSE 0 END) AS strikeouts,
+                SUM(CASE WHEN ab.final_event = 'single' THEN 1 WHEN ab.final_event = 'double' THEN 2 WHEN ab.final_event = 'triple' THEN 3 WHEN ab.final_event = 'home_run' THEN 4 ELSE 0 END) AS total_bases,
+                ROUND(AVG(ab.xwoba), 3) AS xwoba
+            FROM at_bats ab
+            INNER JOIN pitch_ab_team pat ON pat.at_bat_id = ab.at_bat_id
+        ),
+        filtered_pitches AS (
+            SELECT p.*, {derived_pitcher_team_expr('p', 'g')} AS derived_pitcher_team
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
+            WHERE {pitch_where}
+              AND {derived_pitcher_team_expr('p', 'g')} = {sql_quote(team_code)}
+        ),
+        filtered_abs AS (
+            SELECT DISTINCT CONCAT(game_pk, '_', at_bat_number) AS at_bat_key
+            FROM filtered_pitches
+        ),
+        pitching_abs AS (
+            SELECT ab.*
+            FROM at_bats ab
+            INNER JOIN filtered_abs fa ON fa.at_bat_key = ab.at_bat_id
+        )
+        SELECT
+            {sql_quote(team_code)} AS team,
+            (SELECT games FROM team_games) AS games,
+            (SELECT pa FROM batting) AS pa,
+            (SELECT at_bats FROM batting) AS at_bats,
+            (SELECT hits FROM batting) AS hits,
+            (SELECT hr FROM batting) AS hr,
+            (SELECT walks FROM batting) AS walks,
+            (SELECT strikeouts FROM batting) AS strikeouts,
+            ROUND((SELECT hits::FLOAT / NULLIF(at_bats, 0) FROM batting), 3) AS avg,
+            ROUND((SELECT (hits + walks)::FLOAT / NULLIF(pa, 0) FROM batting), 3) AS obp,
+            ROUND((SELECT total_bases::FLOAT / NULLIF(at_bats, 0) FROM batting), 3) AS slg,
+            (SELECT xwoba FROM batting) AS xwoba,
+            (SELECT COUNT(*) FROM filtered_pitches) AS pitches,
+            (SELECT COUNT(DISTINCT pitcher_id) FROM filtered_pitches) AS pitchers,
+            (SELECT ROUND(AVG(release_speed), 1) FROM filtered_pitches) AS avg_velo,
+            (SELECT ROUND(SUM(CASE WHEN description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) FROM filtered_pitches) AS whiff_pct,
+            (SELECT ROUND(AVG(xwoba), 3) FROM pitching_abs) AS xwoba_allowed,
+            (SELECT ROUND(SUM(CASE WHEN final_event IN {STRIKEOUT_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) FROM pitching_abs) AS k_pct_allowed,
+            (SELECT ROUND(SUM(CASE WHEN final_event IN {WALK_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) FROM pitching_abs) AS bb_pct_allowed
+        """
+    ).df()
+    if summary.empty or summary.iloc[0]["games"] in (None, 0):
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    batter_name = player_name_expr("Batter", "ab.batter_id")
+    batting_df = con.execute(
+        f"""
+        WITH pitch_ab_team AS (
+            SELECT
+                CONCAT(p.game_pk, '_', p.at_bat_number) AS at_bat_id,
+                any_value({derived_batter_team_expr('p', 'g')}) AS batter_team
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
+            WHERE {pitch_where}
+              AND {derived_batter_team_expr('p', 'g')} = {sql_quote(team_code)}
+            GROUP BY 1
+        )
+        SELECT
+            ab.batter_id,
+            {batter_name} AS batter_name,
+            COUNT(DISTINCT ab.game_pk) AS g,
+            COUNT(*) AS pa,
+            SUM(CASE WHEN final_event NOT IN {AB_EXCLUDED_EVENTS} THEN 1 ELSE 0 END) AS ab_count,
+            SUM(CASE WHEN final_event IN {HIT_EVENTS} THEN 1 ELSE 0 END) AS h,
+            SUM(CASE WHEN final_event = 'double' THEN 1 ELSE 0 END) AS doubles,
+            SUM(CASE WHEN final_event = 'triple' THEN 1 ELSE 0 END) AS triples,
+            SUM(CASE WHEN final_event = 'home_run' THEN 1 ELSE 0 END) AS hr,
+            SUM(CASE WHEN final_event IN {WALK_EVENTS} THEN 1 ELSE 0 END) AS bb,
+            SUM(CASE WHEN final_event IN {STRIKEOUT_EVENTS} THEN 1 ELSE 0 END) AS so,
+            ROUND(SUM(CASE WHEN final_event IN {HIT_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(SUM(CASE WHEN final_event NOT IN {AB_EXCLUDED_EVENTS} THEN 1 ELSE 0 END), 0), 3) AS avg,
+            ROUND((SUM(CASE WHEN final_event IN {HIT_EVENTS} THEN 1 ELSE 0 END) + SUM(CASE WHEN final_event IN {WALK_EVENTS} THEN 1 ELSE 0 END))::FLOAT / NULLIF(COUNT(*), 0), 3) AS obp,
+            ROUND(SUM(CASE WHEN final_event = 'single' THEN 1 WHEN final_event = 'double' THEN 2 WHEN final_event = 'triple' THEN 3 WHEN final_event = 'home_run' THEN 4 ELSE 0 END)::FLOAT / NULLIF(SUM(CASE WHEN final_event NOT IN {AB_EXCLUDED_EVENTS} THEN 1 ELSE 0 END), 0), 3) AS slg,
+            ROUND(AVG(xwoba), 3) AS xwoba
+        FROM at_bats ab
+        INNER JOIN pitch_ab_team pat ON pat.at_bat_id = ab.at_bat_id
+        LEFT JOIN players pl ON pl.player_id = ab.batter_id
+        WHERE {batting_where}
+        GROUP BY ab.batter_id, {batter_name}
+        HAVING COUNT(*) > 0
+        ORDER BY pa DESC, batter_name
+        LIMIT 25
+        """
+    ).df()
+
+    pitcher_name = player_name_expr("Pitcher", "fp.pitcher_id")
+    pitching_df = con.execute(
+        f"""
+        WITH filtered_pitches AS (
+            SELECT p.*, {derived_pitcher_team_expr('p', 'g')} AS derived_pitcher_team
+            FROM pitches p
+            LEFT JOIN games g ON g.game_pk = p.game_pk
+            WHERE {pitch_where}
+              AND {derived_pitcher_team_expr('p', 'g')} = {sql_quote(team_code)}
+        ),
+        filtered_abs AS (
+            SELECT DISTINCT
+                CONCAT(game_pk, '_', at_bat_number) AS at_bat_key,
+                pitcher_id
+            FROM filtered_pitches
+        ),
+        pitcher_abs AS (
+            SELECT ab.*, fa.pitcher_id
+            FROM at_bats ab
+            INNER JOIN filtered_abs fa ON fa.at_bat_key = ab.at_bat_id
+        ),
+        pitcher_abs_summary AS (
+            SELECT
+                pitcher_id,
+                ROUND(AVG(xwoba), 3) AS xwoba_allowed,
+                ROUND(SUM(CASE WHEN final_event IN {STRIKEOUT_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) AS k_pct,
+                ROUND(SUM(CASE WHEN final_event IN {WALK_EVENTS} THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) AS bb_pct
+            FROM pitcher_abs
+            GROUP BY pitcher_id
+        )
+        SELECT
+            fp.pitcher_id,
+            {pitcher_name} AS pitcher_name,
+            COUNT(DISTINCT fp.game_pk) AS g,
+            COUNT(*) AS pitches,
+            ROUND(AVG(fp.release_speed), 1) AS avg_velo,
+            ROUND(AVG(fp.release_spin_rate), 0) AS avg_spin,
+            ROUND(SUM(CASE WHEN fp.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*), 0), 3) AS whiff_pct,
+            any_value(pas.xwoba_allowed) AS xwoba_allowed,
+            any_value(pas.k_pct) AS k_pct,
+            any_value(pas.bb_pct) AS bb_pct
+        FROM filtered_pitches fp
+        LEFT JOIN players pl ON pl.player_id = fp.pitcher_id
+        LEFT JOIN pitcher_abs_summary pas ON pas.pitcher_id = fp.pitcher_id
+        GROUP BY fp.pitcher_id, {pitcher_name}
+        ORDER BY pitches DESC, pitcher_name
+        LIMIT 25
+        """
+    ).df()
+
+    return {
+        "summary": df_to_json(summary)[0],
+        "batting": inject_player_names(df_to_json(batting_df), id_key="batter_id", name_key="batter_name"),
+        "pitching": inject_player_names(df_to_json(pitching_df), id_key="pitcher_id", name_key="pitcher_name"),
     }
 
 

@@ -763,7 +763,6 @@ You can also select the season type:
 
 - `Regular Season`
 - `Postseason`
-- `Both`
 
 Use `Single Season` when you want one year only.
 
@@ -775,6 +774,23 @@ Important:
 - if a season is not loaded, filtering to that season will not produce meaningful results
 - spring training data is intentionally excluded from the dataset
 - postseason data is retained and can be filtered separately from regular season
+
+### Dashboard Pages
+
+The dashboard currently includes these main analysis views:
+
+- `Count State`
+- `Batter Profile`
+- `Pitcher Profile`
+- `Team Profile`
+- `Leaderboard`
+- `Pitch Sequence`
+
+`Pitch Sequence` now owns the multi-pitcher comparison workflow.
+
+`Pitcher Profile` is a single-pitcher page with an optional team filter.
+
+`Team Profile` shows batting and pitching tables for the selected club in the current season scope.
 
 Always verify available data with:
 

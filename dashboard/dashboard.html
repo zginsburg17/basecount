@@ -9,37 +9,37 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg:      #0a0b0f;
-    --surface: #111318;
-    --surface2:#1a1d26;
-    --border:  #1f2332;
-    --accent:  #c8f04e;
-    --accent2: #e85d3a;
-    --accent3: #5b8fff;
-    --text:    #e8eaf0;
-    --muted:   #5a5f72;
+    --bg:      #f3ede3;
+    --surface: #fffaf2;
+    --surface2:#ece1d2;
+    --border:  #d7c4af;
+    --accent:  #245f68;
+    --accent2: #b25a37;
+    --accent3: #6f8450;
+    --text:    #1f2a2b;
+    --muted:   #66706f;
     --mono:    'DM Mono', monospace;
     --display: 'Playfair Display', serif;
     --sans:    'Syne', sans-serif;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; min-height: 100vh; overflow-x: hidden; }
-  body::before { content:''; position:fixed; inset:0; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.035'/%3E%3C/svg%3E"); pointer-events:none; z-index:999; }
+  body::before { content:''; position:fixed; inset:0; background:linear-gradient(180deg, rgba(255,250,242,0.68) 0%, rgba(243,237,227,0.94) 100%); pointer-events:none; z-index:-1; }
 
   .shell { display:grid; grid-template-columns:220px 1fr; grid-template-rows:56px 1fr; min-height:100vh; }
 
   /* ── Topbar ── */
-  .topbar { grid-column:1/-1; display:flex; align-items:center; padding:0 28px; border-bottom:1px solid var(--border); gap:20px; position:sticky; top:0; background:var(--bg); z-index:10; }
+  .topbar { grid-column:1/-1; display:flex; align-items:center; padding:0 28px; border-bottom:1px solid var(--border); gap:20px; position:sticky; top:0; background:rgba(255,250,242,0.92); backdrop-filter:blur(10px); z-index:10; }
   .logo { font-family:var(--display); font-size:22px; font-weight:900; letter-spacing:-0.5px; }
   .logo span { color:var(--accent); }
   .tagline { font-family:var(--mono); font-size:10px; color:var(--muted); letter-spacing:0.08em; text-transform:uppercase; margin-left:4px; }
   .topbar-right { margin-left:auto; display:flex; align-items:center; gap:16px; }
-  .season-badge { font-family:var(--mono); font-size:11px; color:var(--accent); border:1px solid var(--accent); padding:3px 10px; border-radius:2px; letter-spacing:0.06em; }
+  .season-badge { font-family:var(--mono); font-size:11px; color:var(--accent); border:1px solid rgba(36,95,104,0.35); background:rgba(36,95,104,0.08); padding:3px 10px; border-radius:999px; letter-spacing:0.06em; }
   .live-dot { width:7px; height:7px; border-radius:50%; background:var(--accent2); animation:pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
   /* ── Sidebar ── */
-  .sidebar { border-right:1px solid var(--border); padding:24px 0; display:flex; flex-direction:column; gap:2px; background:var(--surface); }
+  .sidebar { border-right:1px solid var(--border); padding:24px 0; display:flex; flex-direction:column; gap:2px; background:rgba(255,250,242,0.9); }
   .nav-section-label { font-family:var(--mono); font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); padding:18px 20px 6px; }
   .nav-item { display:flex; align-items:center; gap:10px; padding:9px 20px; cursor:pointer; transition:background 0.15s; border-left:2px solid transparent; font-size:13px; font-weight:600; color:var(--muted); user-select:none; }
   .nav-item:hover { background:var(--surface2); color:var(--text); }
@@ -76,7 +76,7 @@
 
   /* ── Stat cards ── */
   .stat-row { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-  .stat-card { background:var(--surface); border:1px solid var(--border); padding:18px 20px; position:relative; overflow:hidden; animation:fadeUp 0.4s ease both; }
+  .stat-card { background:var(--surface); border:1px solid var(--border); padding:18px 20px; position:relative; overflow:hidden; animation:fadeUp 0.4s ease both; box-shadow:0 8px 24px rgba(90,67,44,0.06); }
   .stat-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:var(--accent); transform:scaleX(0); transform-origin:left; transition:transform 0.3s ease; }
   .stat-card:hover::before { transform:scaleX(1); }
   @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
@@ -89,7 +89,7 @@
 
   /* ── Panels ── */
   .panel-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  .panel { background:var(--surface); border:1px solid var(--border); padding:20px 22px; }
+  .panel { background:var(--surface); border:1px solid var(--border); padding:20px 22px; box-shadow:0 10px 30px rgba(90,67,44,0.05); }
   .panel-title { font-family:var(--sans); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
   .panel-title-badge { font-family:var(--mono); font-size:9px; background:var(--surface2); border:1px solid var(--border); padding:2px 8px; color:var(--accent3); border-radius:2px; letter-spacing:0.06em; flex-shrink:0; }
 
@@ -101,12 +101,15 @@
   .matrix-cell .cell-val { font-size:12px; }
 
   /* ── Table ── */
-  .data-table { width:100%; border-collapse:collapse; }
+  .data-table { width:100%; border-collapse:collapse; table-layout:auto; }
   .data-table th { font-family:var(--mono); font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); text-align:left; padding:0 10px 10px; border-bottom:1px solid var(--border); cursor:pointer; white-space:nowrap; }
   .data-table th:hover { color:var(--text); }
-  .data-table td { padding:9px 10px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:12px; }
+  .data-table td { padding:9px 10px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:12px; vertical-align:middle; }
   .data-table tr:last-child td { border-bottom:none; }
-  .data-table tr:hover td { background:var(--surface2); }
+  .data-table tr:hover td { background:rgba(36,95,104,0.06); }
+  .data-table tr.summary-row td { background:rgba(36,95,104,0.08); font-weight:700; }
+  .data-table th:first-child, .data-table td:first-child { padding-left:4px; }
+  .data-table th:last-child, .data-table td:last-child { padding-right:4px; }
   .td-rank { color:var(--muted); font-size:10px; }
   .td-name { font-family:var(--sans); font-weight:600; font-size:13px; color:var(--text); }
   .td-stat { text-align:right; }
@@ -147,6 +150,13 @@
   .type-btn:hover { color:var(--text); }
   .type-btn.active { background:var(--accent2); border-color:var(--accent2); color:#fff; }
 
+  .workspace-bar { background:var(--surface); border:1px solid var(--border); padding:18px 22px; display:flex; flex-wrap:wrap; align-items:flex-end; gap:18px 24px; box-shadow:0 10px 30px rgba(90,67,44,0.05); }
+  .workspace-group { display:flex; flex-direction:column; gap:6px; min-width:120px; }
+  .workspace-label { font-family:var(--mono); font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); }
+  .workspace-status { margin-left:auto; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .soft-btn { background:transparent; border:1px solid var(--border); color:var(--muted); padding:7px 12px; border-radius:999px; cursor:pointer; font-family:var(--mono); font-size:11px; transition:all 0.2s; }
+  .soft-btn:hover { border-color:var(--accent); color:var(--accent); }
+
   /* ── Count stat strip (on profile pages) ── */
   .count-stat-strip { display:flex; gap:24px; flex-wrap:wrap; margin-top:4px; }
   .cstat { text-align:center; }
@@ -164,45 +174,11 @@
 
   <header class="topbar">
     <div class="logo">Base<span>Count</span></div>
-    <div class="tagline">// Statcast Analytics Platform</div>
+    <div class="tagline">// pitch-first baseball analytics</div>
     <div class="topbar-right">
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Data Scope</label>
-          <select id="scope-mode" class="player-select" style="min-width:110px">
-            <option value="single">Single Season</option>
-            <option value="range">Season Range</option>
-          </select>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Season Type</label>
-          <select id="season-type" class="player-select" style="min-width:140px">
-            <option value="both">Both</option>
-            <option value="regular">Regular Season</option>
-            <option value="postseason">Postseason</option>
-          </select>
-        </div>
-        <div id="single-season-wrap" style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Single Season</label>
-          <input type="number" id="lb-season" value="2026" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
-        </div>
-        <div id="range-season-wrap" style="display:flex;gap:10px;align-items:flex-end">
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Range From</label>
-            <input type="number" id="lb-season-start" value="2015" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Range To</label>
-            <input type="number" id="lb-season-end" value="2026" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
-          </div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Active Scope</label>
-          <div id="topbar-scope-label" style="min-width:110px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px">2026</div>
-        </div>
-      </div>
+      <div class="season-badge" id="season-scope-label">2026</div>
       <div class="live-dot"></div>
-      <button onclick="refreshData()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:2px;cursor:pointer;font-family:var(--mono);font-size:11px;transition:all 0.2s" title="Refresh API data">↻ Refresh</button>
+      <button onclick="refreshData()" class="soft-btn" title="Refresh API data">↻ Refresh</button>
     </div>
   </header>
 
@@ -211,6 +187,7 @@
     <div class="nav-item active" onclick="setPage('count',this)"><span class="nav-icon">⬡</span> Count State</div>
     <div class="nav-item" onclick="setPage('batter',this)"><span class="nav-icon">◉</span> Batter Profile</div>
     <div class="nav-item" onclick="setPage('pitcher',this)"><span class="nav-icon">◎</span> Pitcher Profile</div>
+    <div class="nav-item" onclick="setPage('team',this)"><span class="nav-icon">▣</span> Team Profile</div>
     <div class="nav-item" onclick="setPage('leaderboard',this)"><span class="nav-icon">⊞</span> Leaderboard</div>
     <div class="nav-item" onclick="setPage('pitch-sequence',this)"><span class="nav-icon">🔗</span> Pitch Sequence</div>
     <div class="nav-item" onclick="setPage('glossary',this)"><span class="nav-icon">📖</span> Glossary</div>
@@ -222,6 +199,43 @@
       <div style="font-weight:bold;margin-bottom:8px">⚠️ API Connection Error</div>
       <div id="api-error-message"></div>
     </div>
+
+    <section class="workspace-bar">
+      <div class="workspace-group">
+        <div class="workspace-label">Data Scope</div>
+        <select id="scope-mode" class="player-select" style="min-width:130px">
+          <option value="single">Single Season</option>
+          <option value="range">Season Range</option>
+        </select>
+      </div>
+      <div class="workspace-group">
+        <div class="workspace-label">Season Type</div>
+        <select id="season-type" class="player-select" style="min-width:150px">
+          <option value="regular">Regular Season</option>
+          <option value="postseason">Postseason</option>
+        </select>
+      </div>
+      <div class="workspace-group" id="single-season-wrap">
+        <div class="workspace-label">Single Season</div>
+        <input type="number" id="lb-season" value="2026" min="2015" max="2030" style="width:84px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+      </div>
+      <div id="range-season-wrap" style="display:flex;gap:10px;align-items:flex-end">
+        <div class="workspace-group">
+          <div class="workspace-label">Range From</div>
+          <input type="number" id="lb-season-start" value="2015" min="2015" max="2030" style="width:84px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+        </div>
+        <div class="workspace-group">
+          <div class="workspace-label">Range To</div>
+          <input type="number" id="lb-season-end" value="2026" min="2015" max="2030" style="width:84px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
+        </div>
+      </div>
+      <div class="workspace-status">
+        <div class="workspace-group">
+          <div class="workspace-label">Active Scope</div>
+          <div id="topbar-scope-label" style="min-width:124px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;border-radius:999px">2026</div>
+        </div>
+      </div>
+    </section>
 
     <!-- ══════════ COUNT STATE ══════════ -->
     <div id="page-count" class="page-section active">
@@ -311,7 +325,7 @@
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
             <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Scope</label>
-            <div id="season-scope-label" style="min-width:120px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px">2026</div>
+            <div id="count-scope-label" style="min-width:120px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px">2026</div>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
             <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Min PA</label>
@@ -475,6 +489,43 @@
         </div>
       </div>
     </div><!-- /page-pitcher -->
+
+    <!-- ══════════ TEAM PROFILE ══════════ -->
+    <div id="page-team" class="page-section">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Team <em>Profile</em></div>
+          <div class="page-subtitle">// batting and pitching production for the selected club in the current scope</div>
+        </div>
+      </div>
+
+      <div class="profile-controls">
+        <div class="ctrl-group">
+          <div class="ctrl-label">Select Team</div>
+          <div class="select-wrap">
+            <select id="team-select" class="player-select" onchange="renderTeamProfile()"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-row" id="team-stat-cards"></div>
+
+      <div class="panel">
+        <div class="panel-title">Batting Stats</div>
+        <table class="data-table">
+          <thead id="team-batting-thead"></thead>
+          <tbody id="team-batting-body"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Pitching Stats</div>
+        <table class="data-table">
+          <thead id="team-pitching-thead"></thead>
+          <tbody id="team-pitching-body"></tbody>
+        </table>
+      </div>
+    </div><!-- /page-team -->
 
     <!-- ══════════ LEADERBOARD ══════════ -->
     <div id="page-leaderboard" class="page-section">

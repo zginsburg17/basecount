@@ -15,7 +15,8 @@ const state = {
       { key: "pitcher-1", mode: "pitcher", id: null, label: "" },
     ],
   },
-  scope: { mode: "single", season: null, seasonStart: null, seasonEnd: null, seasonType: "both" },
+  team: { selected: null },
+  scope: { mode: "single", season: null, seasonStart: null, seasonEnd: null, seasonType: "regular" },
   season: null,
   latestGameDate: null,
   earliestSeason: null,
@@ -29,6 +30,7 @@ const cache = {
   batterOverview: new Map(),
   pitcherOverview: new Map(),
   leaguePitchingOverview: new Map(),
+  teamOverview: new Map(),
 };
 
 const playerSearchTimers = {};
@@ -414,7 +416,7 @@ function selectedSeasonEnd() {
 
 function activeSeasonQuery(windowName = "season") {
   const mode = document.getElementById("scope-mode")?.value || state.scope.mode;
-  const seasonType = document.getElementById("season-type")?.value || state.scope.seasonType || "both";
+  const seasonType = document.getElementById("season-type")?.value || state.scope.seasonType || "regular";
   if (windowName === "last7" || windowName === "career") {
     return { window: windowName, season_type: seasonType };
   }
@@ -458,6 +460,8 @@ function syncScopeControls() {
   const label = activeSeasonLabel("season");
   document.getElementById("season-scope-label").textContent = label;
   document.getElementById("topbar-scope-label").textContent = label;
+  const countScope = document.getElementById("count-scope-label");
+  if (countScope) countScope.textContent = label;
 }
 
 async function loadMetaContext() {
@@ -478,7 +482,7 @@ async function loadMetaContext() {
     state.scope.season = context.latest_season;
     state.scope.seasonStart = context.earliest_season;
     state.scope.seasonEnd = context.latest_season;
-    state.scope.seasonType = "both";
+    state.scope.seasonType = "regular";
   }
 
   const seasonInputs = ["lb-season", "lb-season-start", "lb-season-end"];
@@ -489,7 +493,7 @@ async function loadMetaContext() {
   });
 
   document.getElementById("scope-mode").value = state.scope.mode;
-  document.getElementById("season-type").value = state.scope.seasonType || "both";
+  document.getElementById("season-type").value = state.scope.seasonType || "regular";
   document.getElementById("lb-season").value = state.scope.season || context.latest_season;
   document.getElementById("lb-season-start").value = state.scope.seasonStart || context.earliest_season;
   document.getElementById("lb-season-end").value = state.scope.seasonEnd || context.latest_season;
@@ -508,6 +512,12 @@ async function loadMetaContext() {
       .concat(state.teams.map((team) => `<option value="${team}">${team}</option>`))
       .join("");
     pitcherTeam.value = state.pitcher.team || "all";
+  }
+  const teamSelect = document.getElementById("team-select");
+  if (teamSelect) {
+    if (!state.team.selected) state.team.selected = state.teams[0] || null;
+    teamSelect.innerHTML = state.teams.map((team) => `<option value="${team}">${team}</option>`).join("");
+    if (state.team.selected) teamSelect.value = state.team.selected;
   }
 
   const activeBatter = lookupPlayerById("batter", previousBatterId) || state.players.batters[0] || null;
@@ -713,7 +723,8 @@ async function renderCountPage() {
   const sorted = [...leaderboard].sort((a, b) => Number(b[sortField] || 0) - Number(a[sortField] || 0));
   const maxValue = Math.max(1, ...sorted.map((row) => Number(row.xwoba || 0)));
   document.getElementById("count-lb-title").textContent = state.count.balls === null ? "Batter Leaderboard — All Counts" : `Batter Leaderboard — ${state.count.balls}-${state.count.strikes}`;
-  document.getElementById("season-scope-label").textContent = activeSeasonLabel("season");
+  const countScope = document.getElementById("count-scope-label");
+  if (countScope) countScope.textContent = activeSeasonLabel("season");
   document.getElementById("count-lb-body").innerHTML = sorted.map((row, index) => `
     <tr>
       <td class="td-rank">${index + 1}</td>
@@ -1107,6 +1118,7 @@ function setPage(page, navEl) {
   if (page === "count") renderCountPage();
   if (page === "batter") renderBatterProfile();
   if (page === "pitcher") renderPitcherProfile();
+  if (page === "team") renderTeamProfile();
   if (page === "leaderboard") renderLeaderboard();
   if (page === "pitch-sequence") renderSequencePage();
 }
@@ -1149,6 +1161,82 @@ function setPitcherWindow(window, el) {
 function setPitcherTeam(team) {
   state.pitcher.team = team || "all";
   renderPitcherProfile();
+}
+
+async function fetchTeamOverview() {
+  if (!state.team.selected) return null;
+  const seasonQuery = activeSeasonQuery("season");
+  const cacheKey = `${state.team.selected}:${JSON.stringify(seasonQuery)}`;
+  if (cache.teamOverview.has(cacheKey)) return cache.teamOverview.get(cacheKey);
+  const data = await apiFetch(`/team/${state.team.selected}/overview${buildQuery(seasonQuery)}`, "team-overview");
+  cache.teamOverview.set(cacheKey, data);
+  return data;
+}
+
+async function renderTeamProfile() {
+  const teamSelect = document.getElementById("team-select");
+  if (teamSelect?.value) state.team.selected = teamSelect.value;
+  if (!state.team.selected) return;
+  const profile = await fetchTeamOverview();
+  if (!profile) return;
+  const summary = profile.summary || {};
+  document.getElementById("team-stat-cards").innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Team / Games</div>
+      <div class="stat-value sm" style="color:var(--accent)">${summary.team || state.team.selected}</div>
+      <div class="stat-delta">${fmtInt(summary.games)} games in ${activeSeasonLabel("season")}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Team Slash</div>
+      <div class="stat-value sm" style="color:var(--accent2)">${fmtRate(summary.avg)} / ${fmtRate(summary.obp)} / ${fmtRate(summary.slg)}</div>
+      <div class="stat-delta">${fmtInt(summary.pa)} PA · xwOBA ${fmtRate(summary.xwoba)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Pitching</div>
+      <div class="stat-value sm" style="color:var(--accent3)">${fmtPct(summary.whiff_pct, 1)}</div>
+      <div class="stat-delta">team whiff · xwOBA allowed ${fmtRate(summary.xwoba_allowed)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Run-Creation Events</div>
+      <div class="stat-value sm">${fmtInt(summary.hr)} HR</div>
+      <div class="stat-delta">${fmtInt(summary.walks)} BB · ${fmtInt(summary.strikeouts)} SO</div>
+    </div>
+  `;
+
+  document.getElementById("team-batting-thead").innerHTML = `<tr><th>Player</th><th class="td-stat">G</th><th class="td-stat">PA</th><th class="td-stat">AB</th><th class="td-stat">H</th><th class="td-stat">2B</th><th class="td-stat">3B</th><th class="td-stat">HR</th><th class="td-stat">BB</th><th class="td-stat">SO</th><th class="td-stat">AVG</th><th class="td-stat">OBP</th><th class="td-stat">SLG</th><th class="td-stat">xwOBA</th></tr>`;
+  document.getElementById("team-batting-body").innerHTML = (profile.batting || []).map((row) => `
+    <tr>
+      <td class="td-name">${row.batter_name || playerName("batter", row.batter_id)}</td>
+      <td class="td-stat">${fmtInt(row.g)}</td>
+      <td class="td-stat">${fmtInt(row.pa)}</td>
+      <td class="td-stat">${fmtInt(row.ab_count)}</td>
+      <td class="td-stat">${fmtInt(row.h)}</td>
+      <td class="td-stat">${fmtInt(row.doubles)}</td>
+      <td class="td-stat">${fmtInt(row.triples)}</td>
+      <td class="td-stat">${fmtInt(row.hr)}</td>
+      <td class="td-stat">${fmtInt(row.bb)}</td>
+      <td class="td-stat">${fmtInt(row.so)}</td>
+      <td class="td-stat td-highlight">${fmtRate(row.avg)}</td>
+      <td class="td-stat">${fmtRate(row.obp)}</td>
+      <td class="td-stat">${fmtRate(row.slg)}</td>
+      <td class="td-stat">${fmtRate(row.xwoba)}</td>
+    </tr>
+  `).join("");
+
+  document.getElementById("team-pitching-thead").innerHTML = `<tr><th>Pitcher</th><th class="td-stat">G</th><th class="td-stat">Pitches</th><th class="td-stat">Velo</th><th class="td-stat">Spin</th><th class="td-stat">Whiff%</th><th class="td-stat">K%</th><th class="td-stat">BB%</th><th class="td-stat">xwOBA Allowed</th></tr>`;
+  document.getElementById("team-pitching-body").innerHTML = (profile.pitching || []).map((row) => `
+    <tr>
+      <td class="td-name">${row.pitcher_name || playerName("pitcher", row.pitcher_id)}</td>
+      <td class="td-stat">${fmtInt(row.g)}</td>
+      <td class="td-stat">${fmtInt(row.pitches)}</td>
+      <td class="td-stat">${fmtNum(row.avg_velo, 1)}</td>
+      <td class="td-stat">${fmtNum(row.avg_spin, 0)}</td>
+      <td class="td-stat td-highlight">${fmtPct(row.whiff_pct, 1)}</td>
+      <td class="td-stat">${fmtPct(row.k_pct, 1)}</td>
+      <td class="td-stat">${fmtPct(row.bb_pct, 1)}</td>
+      <td class="td-stat">${fmtRate(row.xwoba_allowed)}</td>
+    </tr>
+  `).join("");
 }
 
 function setLBType(type, el) {
@@ -1265,9 +1353,11 @@ async function refreshData() {
   cache.batterOverview.clear();
   cache.pitcherOverview.clear();
   cache.leaguePitchingOverview.clear();
+  cache.teamOverview.clear();
   await loadMetaContext();
   if (state.page === "batter") await renderBatterProfile();
   if (state.page === "pitcher") await renderPitcherProfile();
+  if (state.page === "team") await renderTeamProfile();
   if (state.page === "leaderboard") await renderLeaderboard();
   if (state.page === "pitch-sequence") await renderSequencePage();
   await renderCountPage();
@@ -1324,7 +1414,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       state.scope.season = selectedSeason();
       state.scope.seasonStart = selectedSeasonStart();
       state.scope.seasonEnd = selectedSeasonEnd();
-      state.scope.seasonType = document.getElementById("season-type").value || "both";
+      state.scope.seasonType = document.getElementById("season-type").value || "regular";
       syncScopeControls();
       refreshData();
     });
