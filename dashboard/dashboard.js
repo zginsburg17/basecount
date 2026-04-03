@@ -455,8 +455,10 @@ function syncScopeControls() {
 
   singleWrap.hidden = !singleMode;
   rangeWrap.hidden = !rangeMode;
-  singleWrap.style.display = singleMode ? "flex" : "none";
-  rangeWrap.style.display = rangeMode ? "flex" : "none";
+  singleWrap.style.setProperty("display", singleMode ? "flex" : "none", "important");
+  rangeWrap.style.setProperty("display", rangeMode ? "flex" : "none", "important");
+  singleWrap.setAttribute("aria-hidden", String(!singleMode));
+  rangeWrap.setAttribute("aria-hidden", String(!rangeMode));
   singleInput.disabled = !singleMode;
   rangeStart.disabled = !rangeMode;
   rangeEnd.disabled = !rangeMode;
@@ -466,6 +468,11 @@ function syncScopeControls() {
   document.getElementById("topbar-scope-label").textContent = label;
   const countScope = document.getElementById("count-scope-label");
   if (countScope) countScope.textContent = label;
+}
+
+function handleScopeModeChange() {
+  syncScopeControls();
+  refreshData();
 }
 
 async function loadMetaContext() {
@@ -1387,11 +1394,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   buildCountGrid("count-grid", state.count, renderCountPage);
   buildCountGrid("lb-count-grid", state.leaderboard, () => {
     renderLeaderboard();
-  });
-
-  document.getElementById("scope-mode").addEventListener("change", () => {
-    syncScopeControls();
-    refreshData();
   });
 
   document.getElementById("count-outs").addEventListener("click", (event) => {
