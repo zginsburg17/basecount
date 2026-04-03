@@ -3,10 +3,12 @@ Baseball Analytics Platform - FastAPI Backend
 Serves analytics data as JSON for the frontend dashboard.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 import os
+import subprocess
 import sys
+import threading
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -52,6 +54,18 @@ BALL_DESCRIPTIONS = ("ball", "blocked_ball", "hit_by_pitch", "pitchout")
 STRIKE_DESCRIPTIONS = ("called_strike", "swinging_strike", "swinging_strike_blocked", "foul_tip", "missed_bunt")
 FOUL_DESCRIPTIONS = ("foul", "foul_bunt", "foul_pitchout")
 REFERENCE_SEASON = 2025
+
+# ---------------------------------------------------------------------------
+# Sync state — tracks background auto-update runs
+# ---------------------------------------------------------------------------
+_SYNC_STATE: dict = {
+    "status": "idle",        # idle | running | done | error
+    "started_at": None,
+    "completed_at": None,
+    "error": None,
+    "last_result": None,
+}
+_SYNC_LOCK = threading.Lock()
 
 
 def get_con():
@@ -2176,6 +2190,77 @@ def api_outcome_matrix_legacy(season: Optional[int] = None):
     con = get_con()
     season = season or latest_data_context(con)["latest_season"]
     return df_to_json(at_bat_outcome_by_count(con, season=season))
+
+
+# ---------------------------------------------------------------------------
+# Admin — freshness check and background sync trigger
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/freshness")
+def api_admin_freshness():
+    """Return the latest loaded game date for the current season and how stale it is."""
+    con = get_con()
+    today = date.today()
+    current_season = today.year
+    row = con.execute(
+        "SELECT MAX(game_date) FROM pitches WHERE season = ?", [current_season]
+    ).fetchone()
+    latest_date = row[0] if row and row[0] else None
+    if latest_date is None:
+        days_stale = None
+        up_to_date = False
+    else:
+        latest = latest_date if isinstance(latest_date, date) else date.fromisoformat(str(latest_date))
+        days_stale = (today - latest).days
+        up_to_date = days_stale == 0
+    return {
+        "season": current_season,
+        "latest_game_date": str(latest_date) if latest_date else None,
+        "today": str(today),
+        "days_stale": days_stale,
+        "up_to_date": up_to_date,
+    }
+
+
+def _run_auto_update_subprocess():
+    """Spawn ETL auto-update as a subprocess (avoids DuckDB write/read conflict)."""
+    with _SYNC_LOCK:
+        if _SYNC_STATE["status"] == "running":
+            return
+        _SYNC_STATE.update({"status": "running", "started_at": datetime.utcnow().isoformat(), "error": None, "last_result": None})
+    try:
+        result = subprocess.run(
+            [sys.executable, "etl/pipeline.py", "auto-update"],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        with _SYNC_LOCK:
+            if result.returncode == 0:
+                _SYNC_STATE.update({"status": "done", "completed_at": datetime.utcnow().isoformat(), "last_result": result.stdout.strip()})
+            else:
+                _SYNC_STATE.update({"status": "error", "completed_at": datetime.utcnow().isoformat(), "error": result.stderr.strip()})
+    except Exception as exc:
+        with _SYNC_LOCK:
+            _SYNC_STATE.update({"status": "error", "completed_at": datetime.utcnow().isoformat(), "error": str(exc)})
+
+
+@app.post("/api/admin/sync")
+def api_admin_sync():
+    """Trigger a background auto-update (pull missing games, refresh Parquet). Non-blocking."""
+    with _SYNC_LOCK:
+        if _SYNC_STATE["status"] == "running":
+            return {"started": False, "reason": "sync already running"}
+    thread = threading.Thread(target=_run_auto_update_subprocess, daemon=True)
+    thread.start()
+    return {"started": True}
+
+
+@app.get("/api/admin/sync-status")
+def api_admin_sync_status():
+    """Return the current state of the background sync job."""
+    with _SYNC_LOCK:
+        return dict(_SYNC_STATE)
 
 
 # ---------------------------------------------------------------------------

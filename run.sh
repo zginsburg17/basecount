@@ -44,6 +44,9 @@ General:
   ./run.sh enrich
   ./run.sh export-season <year> [export_root]
   ./run.sh import-season <bundle_dir>
+  ./run.sh export-all [export_root]
+  ./run.sh import-all [export_root]
+  ./run.sh auto-update [export_root]
 
 ETL:
   ./run.sh recent [days]
@@ -57,6 +60,9 @@ ETL:
   ./run.sh season-report <year>
   ./run.sh export-season <year> [export_root]
   ./run.sh import-season <bundle_dir>
+  ./run.sh export-all [export_root]
+  ./run.sh import-all [export_root]
+  ./run.sh auto-update [export_root]
 
 Legacy aliases:
   ./run.sh etl        -> ./run.sh recent
@@ -172,6 +178,24 @@ case "$MODE" in
         fi
         echo "Importing season bundle from ${IMPORT_DIR}..."
         run_etl import-season --import-dir "$IMPORT_DIR"
+        ;;
+
+    export-all)
+        EXPORT_ROOT="${2:-exports}"
+        echo "Exporting all loaded seasons to ${EXPORT_ROOT}..."
+        run_etl export-all --export-root "$EXPORT_ROOT"
+        ;;
+
+    import-all)
+        EXPORT_ROOT="${2:-exports}"
+        echo "Importing all season bundles from ${EXPORT_ROOT}..."
+        run_etl import-all --export-root "$EXPORT_ROOT"
+        ;;
+
+    auto-update)
+        EXPORT_ROOT="${2:-exports}"
+        echo "Pulling missing games for the current season and updating ${EXPORT_ROOT}..."
+        run_etl auto-update --export-root "$EXPORT_ROOT"
         ;;
 
     enrich)

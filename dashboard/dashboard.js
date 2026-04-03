@@ -1470,4 +1470,85 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   setPage(state.page || "count");
+  checkFreshness();
 });
+
+// ---------------------------------------------------------------------------
+// Freshness banner + sync
+// ---------------------------------------------------------------------------
+
+let _syncPollInterval = null;
+
+async function checkFreshness() {
+  try {
+    const data = await fetch(`${API_BASE}/api/admin/freshness`).then(r => r.json());
+    const banner = document.getElementById("sync-banner");
+    const msg = document.getElementById("sync-banner-msg");
+    const btn = document.getElementById("sync-btn");
+    if (!data || data.up_to_date) {
+      banner.style.display = "none";
+      return;
+    }
+    const days = data.days_stale;
+    const label = days === null
+      ? "No data loaded for the current season."
+      : `Data is ${days} day${days === 1 ? "" : "s"} behind (last game: ${data.latest_game_date}).`;
+    msg.textContent = label;
+    banner.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 20px;border-radius:4px;margin-bottom:12px;font-family:var(--mono);font-size:12px;background:rgba(178,90,55,0.12);border:1px solid rgba(178,90,55,0.4);color:var(--accent2)";
+    btn.style.display = "inline-block";
+  } catch (_) {
+    // If the freshness endpoint fails, stay quiet — API might not be running
+  }
+}
+
+async function triggerSync() {
+  const banner = document.getElementById("sync-banner");
+  const msg = document.getElementById("sync-banner-msg");
+  const btn = document.getElementById("sync-btn");
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/sync`, { method: "POST" }).then(r => r.json());
+    if (!res.started && res.reason === "sync already running") {
+      msg.textContent = "Sync already in progress...";
+    } else {
+      msg.textContent = "Pulling missing games in the background...";
+    }
+    btn.style.display = "none";
+    banner.style.background = "rgba(36,95,104,0.10)";
+    banner.style.borderColor = "rgba(36,95,104,0.35)";
+    banner.style.color = "var(--accent)";
+    _syncPollInterval = setInterval(pollSyncStatus, 3000);
+  } catch (_) {}
+}
+
+async function pollSyncStatus() {
+  try {
+    const data = await fetch(`${API_BASE}/api/admin/sync-status`).then(r => r.json());
+    const banner = document.getElementById("sync-banner");
+    const msg = document.getElementById("sync-banner-msg");
+    const btn = document.getElementById("sync-btn");
+    if (data.status === "done") {
+      clearInterval(_syncPollInterval);
+      _syncPollInterval = null;
+      banner.style.background = "rgba(111,132,80,0.12)";
+      banner.style.borderColor = "rgba(111,132,80,0.4)";
+      banner.style.color = "var(--accent3)";
+      msg.textContent = "Data updated. Reload the page to see the latest stats.";
+      btn.textContent = "Reload";
+      btn.onclick = () => location.reload();
+      btn.style.display = "inline-block";
+    } else if (data.status === "error") {
+      clearInterval(_syncPollInterval);
+      _syncPollInterval = null;
+      banner.style.background = "rgba(139,0,0,0.10)";
+      banner.style.borderColor = "rgba(139,0,0,0.4)";
+      banner.style.color = "#8B0000";
+      msg.textContent = "Sync failed: " + (data.error || "unknown error");
+      btn.textContent = "Retry";
+      btn.onclick = triggerSync;
+      btn.style.display = "inline-block";
+    }
+  } catch (_) {
+    clearInterval(_syncPollInterval);
+    _syncPollInterval = null;
+  }
+}

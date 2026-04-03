@@ -155,6 +155,9 @@ open dashboard/dashboard.html
 |---------|-------------|
 | `./run.sh export-season <year> [export_root]` | Export one season to a Parquet bundle (default output: `exports/`). |
 | `./run.sh import-season <bundle_dir>` | Import a previously exported Parquet bundle into the database. |
+| `./run.sh export-all [export_root]` | Export every loaded season to Parquet bundles. |
+| `./run.sh import-all [export_root]` | Import all season bundles from `exports/` (or a custom root) to recreate the database. |
+| `./run.sh auto-update [export_root]` | Pull games since the last loaded date for the current season, refresh derived tables and player enrichment, and overwrite the current season's Parquet bundle. |
 
 ### Operations
 
@@ -219,7 +222,44 @@ To import on another machine:
 ./run.sh import-season exports/season=2025
 ```
 
+To recreate the full database from all bundles at once:
+
+```bash
+./run.sh import-all exports/
+```
+
 Derived summary tables (`league_pitch_state_summary`, `player_pitch_state_summary`, `pitch_transition_summary`) are regenerated automatically if their Parquet files are absent from the bundle.
+
+---
+
+## Parquet Bundles in the Repository (Git LFS)
+
+Season bundles can be stored in the repository under `exports/` using Git LFS (each season is ~40–70 MB). The `.gitattributes` file is already configured to route `exports/**/*.parquet` through LFS.
+
+### One-time LFS setup
+
+```bash
+git lfs install
+```
+
+### Build all bundles after a full historical load
+
+```bash
+./run.sh ensure-history
+./run.sh export-all
+git add exports/
+git commit -m "Add season Parquet bundles"
+git push
+```
+
+### Restore the database on a new machine
+
+```bash
+git lfs pull          # download the Parquet files
+./run.sh import-all   # recreate baseball.duckdb from bundles
+./run.sh api
+open dashboard/dashboard.html
+```
 
 ---
 
@@ -253,6 +293,14 @@ The API runs at `http://localhost:8000`. Interactive documentation is at `http:/
 | `GET /api/meta/coverage` | Season completeness and player-name coverage summary |
 | `GET /api/reference/report` | Validation report for the reference season (default: 2025) |
 | `GET /api/players/search` | Player autocomplete search (`?role=batter\|pitcher&q=<term>`) |
+
+### Admin / sync
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/admin/freshness` | Latest loaded game date for the current season and how many days stale it is |
+| `POST /api/admin/sync` | Trigger a background auto-update (non-blocking; returns immediately) |
+| `GET /api/admin/sync-status` | Current state of the background sync job (`idle`, `running`, `done`, `error`) |
 
 ### Pitch-first analytics
 

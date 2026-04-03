@@ -1846,6 +1846,72 @@ def import_season_bundle(
     log.info(f"Imported season bundle from {bundle_dir}")
 
 
+def auto_update_current_season(
+    con: duckdb.DuckDBPyConnection,
+    export_root: str = "exports",
+    include_season_stats: bool = True,
+) -> dict:
+    """
+    Pull any games played since the last loaded game date, then overwrite the
+    current season's Parquet bundle.
+
+    Flow:
+      1. Find the latest game_date in the DB for the current calendar year.
+      2. If no data exists yet, run a full season backfill.
+      3. Otherwise load from (latest_date + 1) through today.
+      4. Re-enrich players, refresh derived tables, overwrite Parquet bundle.
+
+    Returns a summary dict: rows_added, latest_game_date, season, up_to_date.
+    """
+    today = date.today()
+    current_season = today.year
+
+    row = con.execute(
+        "SELECT MAX(game_date) FROM pitches WHERE season = ?", [current_season]
+    ).fetchone()
+    latest_date = row[0] if row and row[0] else None
+
+    if latest_date is None:
+        log.info(f"No data found for {current_season}. Running full season backfill...")
+        rows_added = backfill_season(con, season=current_season, chunk_days=7)
+    else:
+        if not isinstance(latest_date, date):
+            latest_date = datetime.strptime(str(latest_date), "%Y-%m-%d").date()
+        start = latest_date + timedelta(days=1)
+        if start > today:
+            log.info(f"Already up to date through {latest_date}.")
+            return {
+                "rows_added": 0,
+                "latest_game_date": str(latest_date),
+                "season": current_season,
+                "up_to_date": True,
+            }
+        log.info(f"Pulling missing games: {start} → {today}")
+        rows_added = load_date_range(
+            con,
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=today.strftime("%Y-%m-%d"),
+        )
+
+    enrich_players(con)
+    refresh_season_derived_data(con, current_season, include_external_season_stats=include_season_stats)
+
+    # Overwrite the current season's Parquet bundle with the refreshed data.
+    export_dir = export_season_bundle(con, season=current_season, export_root=export_root)
+
+    new_latest = con.execute(
+        "SELECT MAX(game_date) FROM pitches WHERE season = ?", [current_season]
+    ).fetchone()[0]
+
+    return {
+        "rows_added": rows_added,
+        "latest_game_date": str(new_latest) if new_latest else None,
+        "season": current_season,
+        "up_to_date": False,
+        "export_dir": str(export_dir),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load Statcast data into DuckDB.")
     parser.add_argument(
@@ -1860,13 +1926,21 @@ def parse_args() -> argparse.Namespace:
             "all-history",
             "ensure-history",
             "current-season-update",
+            "auto-update",
             "export-season",
+            "export-all",
             "import-season",
+            "import-all",
             "enrich",
             "status",
             "season-report",
         ],
-        help="Load recent data, one season, rebuild one season, a season range, all history, ensure full history, update the current season, export/import season bundles, enrich names, inspect DB status, or report one season.",
+        help=(
+            "Load recent data, one season, rebuild a season, a season range, "
+            "all history, ensure full history, update/auto-update the current "
+            "season, export/import season bundles (one or all), enrich player "
+            "names, inspect DB status, or report one season."
+        ),
     )
     parser.add_argument("--db-path", default="baseball.duckdb", help="DuckDB database path.")
     parser.add_argument("--season", type=int, help="Single season to backfill.")
@@ -1982,6 +2056,35 @@ if __name__ == "__main__":
         if not args.import_dir:
             raise SystemExit("--import-dir is required for mode 'import-season'")
         import_season_bundle(con, args.import_dir)
+
+    elif args.mode == "auto-update":
+        result = auto_update_current_season(
+            con,
+            export_root=args.export_root,
+            include_season_stats=not args.skip_season_stats,
+        )
+        log.info(f"Auto-update complete: {result}")
+
+    elif args.mode == "export-all":
+        seasons = loaded_seasons(con)
+        if not seasons:
+            log.warning("No seasons loaded. Nothing to export.")
+        else:
+            for s in seasons:
+                export_season_bundle(con, season=s, export_root=args.export_root)
+            log.info(f"Exported {len(seasons)} seasons to {args.export_root}/")
+
+    elif args.mode == "import-all":
+        root = Path(args.export_root)
+        if not root.exists():
+            raise SystemExit(f"Export root does not exist: {root}")
+        bundles = sorted(root.glob("season=*"))
+        if not bundles:
+            raise SystemExit(f"No season bundles found in {root}")
+        for bundle in bundles:
+            import_season_bundle(con, str(bundle))
+        enrich_players(con)
+        log.info(f"Imported {len(bundles)} season bundles from {root}")
 
     elif args.mode == "enrich":
         enrich_players(con)

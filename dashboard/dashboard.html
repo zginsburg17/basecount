@@ -200,6 +200,12 @@
       <div id="api-error-message"></div>
     </div>
 
+    <!-- Freshness / Sync Banner -->
+    <div id="sync-banner" style="display:none;padding:12px 20px;border-radius:4px;margin-bottom:12px;font-family:var(--mono);font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+      <span id="sync-banner-msg"></span>
+      <button id="sync-btn" onclick="triggerSync()" style="padding:5px 14px;border:1px solid currentColor;background:transparent;color:inherit;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:2px">Update Now</button>
+    </div>
+
     <section class="workspace-bar">
       <div class="workspace-group">
         <div class="workspace-label">Data Scope</div>
