@@ -146,6 +146,9 @@ BaseCount currently supports the following data-loading modes:
 - `season`
   Loads a single season.
 
+- `rebuild-season`
+  Deletes one season from the local database and reloads it from the source systems. This is the safest way to fix one season without touching the rest of the database.
+
 - `range`
   Loads an inclusive range of seasons.
 
@@ -167,13 +170,29 @@ BaseCount currently supports the following data-loading modes:
 - `status`
   Reports what data is currently loaded in the DuckDB database.
 
+- `season-report`
+  Reports one season's regular-season game count, postseason breakdown, and the number of batting/pitching summary rows loaded for that season.
+
 Important:
 
 - a season is only considered complete after a full season backfill finishes successfully
 - partial data for a season does not count as complete history coverage
 - spring training is excluded from ingestion
 - regular season and postseason are retained
+- Fangraphs standard and value batting/pitching tables are also ingested for each loaded season unless explicitly skipped
 - if a Statcast multi-day response is malformed, the ETL automatically retries and splits the date range into smaller windows
+
+For validation purposes, the project currently treats these season expectations as important checkpoints:
+
+- `2025` regular season: `2430` games
+- `2025` postseason: `47` games total
+- `2020` regular season: `898` games actually played
+
+Note:
+
+- the `2025` postseason total is `47`, not `45`
+- the round breakdown `11 + 18 + 11 + 7` equals `47`
+- the shortened `2020` season finished with `898` games played, not the original `900` scheduled
 
 ## Standard Workflow
 
@@ -207,6 +226,8 @@ If you need historical seasons, you must explicitly use one of the following:
 ./run.sh all-history
 ./run.sh ensure-history
 ./run.sh season 2025
+./run.sh rebuild-season 2025
+./run.sh season-report 2025
 ./run.sh range 2015 2025
 ```
 
@@ -454,6 +475,49 @@ Example:
 ./run.sh season 2025
 ```
 
+This loads:
+
+- Statcast pitch-level data
+- derived at-bats
+- player enrichment
+- Fangraphs standard batting stats
+- Fangraphs value batting stats
+- Fangraphs standard pitching stats
+- Fangraphs value pitching stats
+
+### `./run.sh rebuild-season <year> [chunk_days]`
+
+Deletes one season from the local database and then reloads it cleanly.
+
+This is the recommended command when:
+
+- one season looks wrong
+- you want to validate `2025` before rebuilding everything else
+- you do not want to destroy the rest of the database
+
+Example:
+
+```bash
+./run.sh rebuild-season 2025
+```
+
+### `./run.sh season-report <year>`
+
+Prints a season validation summary from the local database.
+
+Example:
+
+```bash
+./run.sh season-report 2025
+```
+
+This report includes:
+
+- regular-season game count
+- postseason game count
+- postseason game breakdown by round code
+- row counts for the four Fangraphs summary tables
+
 ### `./run.sh range <start_year> <end_year>`
 
 Loads an inclusive range of seasons.
@@ -510,6 +574,10 @@ exports/season=2015/
 ├── at_bats.parquet
 ├── games.parquet
 ├── players.parquet
+├── batting_standard_stats.parquet
+├── batting_value_stats.parquet
+├── pitching_standard_stats.parquet
+├── pitching_value_stats.parquet
 └── metadata.json
 ```
 
@@ -540,9 +608,11 @@ If you prefer to run the ETL directly instead of the shell wrapper, the raw comm
 ```bash
 python etl/pipeline.py recent --days 7
 python etl/pipeline.py season --season 2025
+python etl/pipeline.py rebuild-season --season 2025
 python etl/pipeline.py range --season-start 2018 --season-end 2025
 python etl/pipeline.py all-history
 python etl/pipeline.py ensure-history
+python etl/pipeline.py season-report --season 2025
 python etl/pipeline.py export-season --season 2015 --export-root exports
 python etl/pipeline.py import-season --import-dir exports/season=2015
 python etl/pipeline.py enrich

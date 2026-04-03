@@ -37,6 +37,7 @@ General:
   ./run.sh ensure-history
   ./run.sh current-season-update [days]
   ./run.sh status
+  ./run.sh season-report <year>
   ./run.sh enrich
   ./run.sh export-season <year> [export_root]
   ./run.sh import-season <bundle_dir>
@@ -44,10 +45,12 @@ General:
 ETL:
   ./run.sh recent [days]
   ./run.sh season <year> [chunk_days]
+  ./run.sh rebuild-season <year> [chunk_days]
   ./run.sh range <start_year> <end_year> [chunk_days]
   ./run.sh all-history [chunk_days]
   ./run.sh ensure-history [chunk_days]
   ./run.sh current-season-update [days]
+  ./run.sh season-report <year>
   ./run.sh export-season <year> [export_root]
   ./run.sh import-season <bundle_dir>
 
@@ -81,6 +84,18 @@ case "$MODE" in
         fi
         echo "Backfilling season ${SEASON}..."
         run_etl season --season "$SEASON" --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    rebuild-season)
+        SEASON="${2:-}"
+        CHUNK_DAYS="${3:-7}"
+        if [ -z "$SEASON" ]; then
+            echo "Rebuild-season mode requires a year."
+            print_usage
+            exit 1
+        fi
+        echo "Rebuilding season ${SEASON} from scratch..."
+        run_etl rebuild-season --season "$SEASON" --chunk-days "$CHUNK_DAYS"
         ;;
 
     range)
@@ -145,6 +160,17 @@ case "$MODE" in
     status)
         echo "Inspecting loaded database status..."
         run_etl status
+        ;;
+
+    season-report)
+        SEASON="${2:-}"
+        if [ -z "$SEASON" ]; then
+            echo "Season-report mode requires a year."
+            print_usage
+            exit 1
+        fi
+        echo "Inspecting season ${SEASON}..."
+        run_etl season-report --season "$SEASON"
         ;;
 
     etl)

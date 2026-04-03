@@ -6,7 +6,7 @@ Ingests pitch-level Statcast data via pybaseball and loads into DuckDB.
 import argparse
 import duckdb
 import pandas as pd
-from pybaseball import statcast, playerid_reverse_lookup
+from pybaseball import batting_stats, pitching_stats, playerid_reverse_lookup, statcast
 from pandas.errors import ParserError
 from datetime import date, datetime, timedelta
 import json
@@ -24,6 +24,32 @@ STATCAST_START_SEASON = 2015
 REGULAR_SEASON_GAME_TYPES = ("R",)
 POSTSEASON_GAME_TYPES = ("F", "D", "L", "W")
 SUPPORTED_GAME_TYPES = REGULAR_SEASON_GAME_TYPES + POSTSEASON_GAME_TYPES
+FANGRAPHS_STANDARD_BATTING_COLUMNS = [
+    "Name", "Team", "Season", "Age", "G", "AB", "PA", "H", "1B", "2B", "3B",
+    "HR", "R", "RBI", "BB", "IBB", "SO", "HBP", "SF", "SH", "GDP", "SB", "CS",
+    "AVG", "OBP", "SLG", "OPS", "ISO", "BABIP", "BB%", "K%",
+]
+FANGRAPHS_VALUE_BATTING_COLUMNS = [
+    "Name", "Team", "Season", "Age", "wOBA", "wRAA", "wRC", "wRC+", "BsR",
+    "Off", "Def", "WAR", "WPA", "RE24", "RAR", "Dol",
+]
+FANGRAPHS_STANDARD_PITCHING_COLUMNS = [
+    "Name", "Team", "Season", "Age", "W", "L", "ERA", "G", "GS", "CG", "ShO",
+    "SV", "BS", "IP", "TBF", "H", "R", "ER", "HR", "BB", "IBB", "HBP", "WP",
+    "BK", "SO", "K/9", "BB/9", "K/BB", "AVG", "WHIP", "BABIP", "LOB%", "FIP",
+]
+FANGRAPHS_VALUE_PITCHING_COLUMNS = [
+    "Name", "Team", "Season", "Age", "WAR", "RAR", "Dol", "xFIP", "SIERA",
+    "WPA", "RE24", "ERA-", "FIP-", "K%", "BB%", "LOB%",
+]
+SEASON_VALIDATION_EXPECTATIONS = {
+    2020: {"regular_games": 898},
+    2025: {
+        "regular_games": 2430,
+        "postseason_total": 47,
+        "postseason_breakdown": {"F": 11, "D": 18, "L": 11, "W": 7},
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +203,130 @@ CREATE TABLE IF NOT EXISTS season_backfill_status (
     loaded_rows         BIGINT DEFAULT 0,
     completed           BOOLEAN DEFAULT FALSE,
     completed_at        TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS batting_standard_stats (
+    row_key             VARCHAR PRIMARY KEY,
+    season              INTEGER NOT NULL,
+    player_id_fangraphs INTEGER,
+    player_name         VARCHAR,
+    team                VARCHAR,
+    age                 INTEGER,
+    g                   INTEGER,
+    ab                  INTEGER,
+    pa                  INTEGER,
+    h                   INTEGER,
+    singles             INTEGER,
+    doubles             INTEGER,
+    triples             INTEGER,
+    hr                  INTEGER,
+    r                   INTEGER,
+    rbi                 INTEGER,
+    bb                  INTEGER,
+    ibb                 INTEGER,
+    so                  INTEGER,
+    hbp                 INTEGER,
+    sf                  INTEGER,
+    sh                  INTEGER,
+    gdp                 INTEGER,
+    sb                  INTEGER,
+    cs                  INTEGER,
+    avg                 FLOAT,
+    obp                 FLOAT,
+    slg                 FLOAT,
+    ops                 FLOAT,
+    iso                 FLOAT,
+    babip               FLOAT,
+    bb_pct              FLOAT,
+    k_pct               FLOAT,
+    stats_json          VARCHAR,
+    updated_at          TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS batting_value_stats (
+    row_key             VARCHAR PRIMARY KEY,
+    season              INTEGER NOT NULL,
+    player_id_fangraphs INTEGER,
+    player_name         VARCHAR,
+    team                VARCHAR,
+    age                 INTEGER,
+    woba                FLOAT,
+    wraa                FLOAT,
+    wrc                 FLOAT,
+    wrc_plus            FLOAT,
+    bsr                 FLOAT,
+    off_value           FLOAT,
+    def_value           FLOAT,
+    war                 FLOAT,
+    wpa                 FLOAT,
+    re24                FLOAT,
+    rar                 FLOAT,
+    dollars             FLOAT,
+    stats_json          VARCHAR,
+    updated_at          TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS pitching_standard_stats (
+    row_key             VARCHAR PRIMARY KEY,
+    season              INTEGER NOT NULL,
+    player_id_fangraphs INTEGER,
+    player_name         VARCHAR,
+    team                VARCHAR,
+    age                 INTEGER,
+    w                   INTEGER,
+    l                   INTEGER,
+    era                 FLOAT,
+    g                   INTEGER,
+    gs                  INTEGER,
+    cg                  INTEGER,
+    sho                 INTEGER,
+    sv                  INTEGER,
+    bs                  INTEGER,
+    ip                  FLOAT,
+    tbf                 INTEGER,
+    h                   INTEGER,
+    r                   INTEGER,
+    er                  INTEGER,
+    hr                  INTEGER,
+    bb                  INTEGER,
+    ibb                 INTEGER,
+    hbp                 INTEGER,
+    wp                  INTEGER,
+    bk                  INTEGER,
+    so                  INTEGER,
+    k_per_9             FLOAT,
+    bb_per_9            FLOAT,
+    k_per_bb            FLOAT,
+    avg                 FLOAT,
+    whip                FLOAT,
+    babip               FLOAT,
+    lob_pct             FLOAT,
+    fip                 FLOAT,
+    stats_json          VARCHAR,
+    updated_at          TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS pitching_value_stats (
+    row_key             VARCHAR PRIMARY KEY,
+    season              INTEGER NOT NULL,
+    player_id_fangraphs INTEGER,
+    player_name         VARCHAR,
+    team                VARCHAR,
+    age                 INTEGER,
+    war                 FLOAT,
+    rar                 FLOAT,
+    dollars             FLOAT,
+    xfip                FLOAT,
+    siera               FLOAT,
+    wpa                 FLOAT,
+    re24                FLOAT,
+    era_minus           FLOAT,
+    fip_minus           FLOAT,
+    k_pct               FLOAT,
+    bb_pct              FLOAT,
+    lob_pct             FLOAT,
+    stats_json          VARCHAR,
     updated_at          TIMESTAMP DEFAULT current_timestamp
 );
 """
@@ -519,6 +669,193 @@ def next_ingestion_run_id(con: duckdb.DuckDBPyConnection) -> int:
     return int(run_id)
 
 
+def delete_season_data(con: duckdb.DuckDBPyConnection, season: int) -> None:
+    log.info(f"Deleting existing data for season {season}...")
+    for table_name in [
+        "pitching_value_stats",
+        "pitching_standard_stats",
+        "batting_value_stats",
+        "batting_standard_stats",
+        "at_bats",
+        "pitches",
+        "games",
+        "season_backfill_status",
+    ]:
+        con.execute(f"DELETE FROM {table_name} WHERE season = ?", [season])
+
+
+def _serialize_stat_value(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _stat_row_key(season: int, row: pd.Series) -> str:
+    player_id = row.get("IDfg")
+    player_name = (row.get("Name") or "").strip()
+    team = (row.get("Team") or "").strip()
+    player_token = str(int(player_id)) if pd.notna(player_id) else player_name.replace(" ", "_")
+    return f"{season}:{player_token}:{team or 'NA'}"
+
+
+def _safe_value(row: pd.Series, column: str):
+    if column not in row.index:
+        return None
+    return _serialize_stat_value(row[column])
+
+
+def _build_processed_stats_frame(
+    raw_df: pd.DataFrame,
+    season: int,
+    *,
+    metric_columns: dict[str, str],
+) -> pd.DataFrame:
+    records = []
+    for _, row in raw_df.iterrows():
+        records.append({
+            "row_key": _stat_row_key(season, row),
+            "season": int(_safe_value(row, "Season") or season),
+            "player_id_fangraphs": _safe_value(row, "IDfg"),
+            "player_name": _safe_value(row, "Name"),
+            "team": _safe_value(row, "Team"),
+            "age": _safe_value(row, "Age"),
+            **{target: _safe_value(row, source) for target, source in metric_columns.items()},
+            "stats_json": json.dumps(
+                {str(col): _serialize_stat_value(row[col]) for col in raw_df.columns},
+                default=str,
+            ),
+        })
+    return pd.DataFrame(records)
+
+
+def _replace_stat_rows(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    rows_df: pd.DataFrame,
+    season: int,
+) -> int:
+    con.execute(f"DELETE FROM {table_name} WHERE season = ?", [season])
+    if rows_df.empty:
+        log.warning(f"No rows returned for {table_name} season {season}.")
+        return 0
+
+    con.register("_stats_rows_df", rows_df)
+    column_list = ", ".join(rows_df.columns.tolist())
+    con.execute(f"INSERT OR REPLACE INTO {table_name} ({column_list}) SELECT {column_list} FROM _stats_rows_df")
+    con.unregister("_stats_rows_df")
+    return len(rows_df)
+
+
+def ingest_fangraphs_season_stats(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    *,
+    qual: int = 0,
+) -> dict:
+    log.info(f"Fetching Fangraphs batting/pitching stats for season {season}...")
+    raw_batting = batting_stats(season, qual=qual, split_seasons=True)
+    raw_pitching = pitching_stats(season, qual=qual, split_seasons=True)
+
+    if raw_batting is None:
+        raw_batting = pd.DataFrame()
+    if raw_pitching is None:
+        raw_pitching = pd.DataFrame()
+
+    batting_standard_df = _build_processed_stats_frame(
+        raw_batting[[col for col in FANGRAPHS_STANDARD_BATTING_COLUMNS if col in raw_batting.columns]].copy(),
+        season,
+        metric_columns={
+            "g": "G", "ab": "AB", "pa": "PA", "h": "H", "singles": "1B", "doubles": "2B",
+            "triples": "3B", "hr": "HR", "r": "R", "rbi": "RBI", "bb": "BB", "ibb": "IBB",
+            "so": "SO", "hbp": "HBP", "sf": "SF", "sh": "SH", "gdp": "GDP", "sb": "SB",
+            "cs": "CS", "avg": "AVG", "obp": "OBP", "slg": "SLG", "ops": "OPS", "iso": "ISO",
+            "babip": "BABIP", "bb_pct": "BB%", "k_pct": "K%",
+        },
+    )
+    batting_value_df = _build_processed_stats_frame(
+        raw_batting[[col for col in FANGRAPHS_VALUE_BATTING_COLUMNS if col in raw_batting.columns]].copy(),
+        season,
+        metric_columns={
+            "woba": "wOBA", "wraa": "wRAA", "wrc": "wRC", "wrc_plus": "wRC+", "bsr": "BsR",
+            "off_value": "Off", "def_value": "Def", "war": "WAR", "wpa": "WPA", "re24": "RE24",
+            "rar": "RAR", "dollars": "Dol",
+        },
+    )
+    pitching_standard_df = _build_processed_stats_frame(
+        raw_pitching[[col for col in FANGRAPHS_STANDARD_PITCHING_COLUMNS if col in raw_pitching.columns]].copy(),
+        season,
+        metric_columns={
+            "w": "W", "l": "L", "era": "ERA", "g": "G", "gs": "GS", "cg": "CG", "sho": "ShO",
+            "sv": "SV", "bs": "BS", "ip": "IP", "tbf": "TBF", "h": "H", "r": "R", "er": "ER",
+            "hr": "HR", "bb": "BB", "ibb": "IBB", "hbp": "HBP", "wp": "WP", "bk": "BK",
+            "so": "SO", "k_per_9": "K/9", "bb_per_9": "BB/9", "k_per_bb": "K/BB", "avg": "AVG",
+            "whip": "WHIP", "babip": "BABIP", "lob_pct": "LOB%", "fip": "FIP",
+        },
+    )
+    pitching_value_df = _build_processed_stats_frame(
+        raw_pitching[[col for col in FANGRAPHS_VALUE_PITCHING_COLUMNS if col in raw_pitching.columns]].copy(),
+        season,
+        metric_columns={
+            "war": "WAR", "rar": "RAR", "dollars": "Dol", "xfip": "xFIP", "siera": "SIERA",
+            "wpa": "WPA", "re24": "RE24", "era_minus": "ERA-", "fip_minus": "FIP-",
+            "k_pct": "K%", "bb_pct": "BB%", "lob_pct": "LOB%",
+        },
+    )
+
+    results = {
+        "batting_standard_rows": _replace_stat_rows(con, "batting_standard_stats", batting_standard_df, season),
+        "batting_value_rows": _replace_stat_rows(con, "batting_value_stats", batting_value_df, season),
+        "pitching_standard_rows": _replace_stat_rows(con, "pitching_standard_stats", pitching_standard_df, season),
+        "pitching_value_rows": _replace_stat_rows(con, "pitching_value_stats", pitching_value_df, season),
+    }
+    log.info(
+        "Fangraphs season stats loaded for %s: batting standard=%s, batting value=%s, "
+        "pitching standard=%s, pitching value=%s",
+        season,
+        results["batting_standard_rows"],
+        results["batting_value_rows"],
+        results["pitching_standard_rows"],
+        results["pitching_value_rows"],
+    )
+    return results
+
+
+def season_report(con: duckdb.DuckDBPyConnection, season: int) -> dict:
+    breakdown_rows = con.execute(
+        """
+        SELECT game_type, COUNT(DISTINCT game_pk) AS games
+        FROM pitches
+        WHERE season = ?
+        GROUP BY game_type
+        ORDER BY game_type
+        """,
+        [season],
+    ).fetchall()
+    breakdown = {row[0]: int(row[1]) for row in breakdown_rows}
+    regular_games = breakdown.get("R", 0)
+    postseason_breakdown = {k: v for k, v in breakdown.items() if k in POSTSEASON_GAME_TYPES}
+    postseason_total = sum(postseason_breakdown.values())
+    expectations = SEASON_VALIDATION_EXPECTATIONS.get(season, {})
+    return {
+        "season": season,
+        "regular_games": regular_games,
+        "postseason_total": postseason_total,
+        "postseason_breakdown": postseason_breakdown,
+        "expected": expectations,
+        "batting_standard_rows": con.execute("SELECT COUNT(*) FROM batting_standard_stats WHERE season = ?", [season]).fetchone()[0],
+        "batting_value_rows": con.execute("SELECT COUNT(*) FROM batting_value_stats WHERE season = ?", [season]).fetchone()[0],
+        "pitching_standard_rows": con.execute("SELECT COUNT(*) FROM pitching_standard_stats WHERE season = ?", [season]).fetchone()[0],
+        "pitching_value_rows": con.execute("SELECT COUNT(*) FROM pitching_value_stats WHERE season = ?", [season]).fetchone()[0],
+    }
+
+
 def fetch_statcast_with_fallback(
     start: date,
     end: date,
@@ -801,6 +1138,7 @@ def backfill_season_range(
     season_end: int,
     chunk_days: int = 7,
     delay_between_seasons: float = 5.0,
+    include_season_stats: bool = True,
 ) -> int:
     """Backfill an inclusive season range."""
     start, end = sorted((season_start, season_end))
@@ -808,6 +1146,8 @@ def backfill_season_range(
 
     for idx, season in enumerate(range(start, end + 1)):
         total += backfill_season(con, season=season, chunk_days=chunk_days)
+        if include_season_stats:
+            ingest_fangraphs_season_stats(con, season)
         if idx < (end - start):
             time.sleep(delay_between_seasons)
 
@@ -818,9 +1158,16 @@ def backfill_season_range(
 def backfill_all_history(
     con: duckdb.DuckDBPyConnection,
     chunk_days: int = 7,
+    include_season_stats: bool = True,
 ) -> int:
     seasons = available_statcast_seasons()
-    return backfill_season_range(con, seasons[0], seasons[-1], chunk_days=chunk_days)
+    return backfill_season_range(
+        con,
+        seasons[0],
+        seasons[-1],
+        chunk_days=chunk_days,
+        include_season_stats=include_season_stats,
+    )
 
 
 def loaded_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
@@ -902,6 +1249,7 @@ def verify_history_coverage(
 def ensure_full_history(
     con: duckdb.DuckDBPyConnection,
     chunk_days: int = 7,
+    include_season_stats: bool = True,
 ) -> dict:
     coverage = verify_history_coverage(con)
     missing = coverage["missing_seasons"]
@@ -910,6 +1258,8 @@ def ensure_full_history(
         log.info(f"Missing historical seasons detected: {missing}")
         for season in missing:
             backfill_season(con, season=season, chunk_days=chunk_days)
+            if include_season_stats:
+                ingest_fangraphs_season_stats(con, season)
     else:
         log.info("Full historical season coverage already present.")
 
@@ -922,6 +1272,7 @@ def ensure_full_history(
 def current_season_update(
     con: duckdb.DuckDBPyConnection,
     days: int = 2,
+    include_season_stats: bool = True,
 ) -> None:
     today = date.today()
     start = today - timedelta(days=max(days - 1, 0))
@@ -931,6 +1282,8 @@ def current_season_update(
         end_date=today.strftime("%Y-%m-%d"),
     )
     enrich_players(con)
+    if include_season_stats:
+        ingest_fangraphs_season_stats(con, today.year)
 
 
 def export_season_bundle(
@@ -945,6 +1298,10 @@ def export_season_bundle(
     at_bats_path = export_dir / "at_bats.parquet"
     games_path = export_dir / "games.parquet"
     players_path = export_dir / "players.parquet"
+    batting_standard_path = export_dir / "batting_standard_stats.parquet"
+    batting_value_path = export_dir / "batting_value_stats.parquet"
+    pitching_standard_path = export_dir / "pitching_standard_stats.parquet"
+    pitching_value_path = export_dir / "pitching_value_stats.parquet"
     metadata_path = export_dir / "metadata.json"
 
     con.execute(
@@ -969,6 +1326,18 @@ def export_season_bundle(
         ) TO '{players_path.as_posix()}' (FORMAT PARQUET)
         """
     )
+    con.execute(
+        f"COPY (SELECT * FROM batting_standard_stats WHERE season = {season}) TO '{batting_standard_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM batting_value_stats WHERE season = {season}) TO '{batting_value_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM pitching_standard_stats WHERE season = {season}) TO '{pitching_standard_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM pitching_value_stats WHERE season = {season}) TO '{pitching_value_path.as_posix()}' (FORMAT PARQUET)"
+    )
 
     metadata = {
         "season": season,
@@ -978,6 +1347,10 @@ def export_season_bundle(
             "at_bats": at_bats_path.name,
             "games": games_path.name,
             "players": players_path.name,
+            "batting_standard_stats": batting_standard_path.name,
+            "batting_value_stats": batting_value_path.name,
+            "pitching_standard_stats": pitching_standard_path.name,
+            "pitching_value_stats": pitching_value_path.name,
         },
     }
     metadata_path.write_text(json.dumps(metadata, indent=2))
@@ -997,8 +1370,21 @@ def import_season_bundle(
     at_bats_path = bundle_dir / "at_bats.parquet"
     games_path = bundle_dir / "games.parquet"
     players_path = bundle_dir / "players.parquet"
+    batting_standard_path = bundle_dir / "batting_standard_stats.parquet"
+    batting_value_path = bundle_dir / "batting_value_stats.parquet"
+    pitching_standard_path = bundle_dir / "pitching_standard_stats.parquet"
+    pitching_value_path = bundle_dir / "pitching_value_stats.parquet"
 
-    required = [pitches_path, at_bats_path, games_path, players_path]
+    required = [
+        pitches_path,
+        at_bats_path,
+        games_path,
+        players_path,
+        batting_standard_path,
+        batting_value_path,
+        pitching_standard_path,
+        pitching_value_path,
+    ]
     missing_files = [path for path in required if not path.exists()]
     if missing_files:
         raise SystemExit(f"Import bundle is incomplete. Missing files: {missing_files}")
@@ -1007,6 +1393,10 @@ def import_season_bundle(
     con.execute(f"INSERT OR REPLACE INTO games SELECT * FROM read_parquet('{games_path.as_posix()}')")
     con.execute(f"INSERT OR REPLACE INTO pitches SELECT * FROM read_parquet('{pitches_path.as_posix()}')")
     con.execute(f"INSERT OR REPLACE INTO at_bats SELECT * FROM read_parquet('{at_bats_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO batting_standard_stats SELECT * FROM read_parquet('{batting_standard_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO batting_value_stats SELECT * FROM read_parquet('{batting_value_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO pitching_standard_stats SELECT * FROM read_parquet('{pitching_standard_path.as_posix()}')")
+    con.execute(f"INSERT OR REPLACE INTO pitching_value_stats SELECT * FROM read_parquet('{pitching_value_path.as_posix()}')")
     log.info(f"Imported season bundle from {bundle_dir}")
 
 
@@ -1019,6 +1409,7 @@ def parse_args() -> argparse.Namespace:
         choices=[
             "recent",
             "season",
+            "rebuild-season",
             "range",
             "all-history",
             "ensure-history",
@@ -1027,8 +1418,9 @@ def parse_args() -> argparse.Namespace:
             "import-season",
             "enrich",
             "status",
+            "season-report",
         ],
-        help="Load recent data, one season, a season range, all history, ensure full history, update the current season, export a season bundle, import a season bundle, enrich names, or inspect DB status.",
+        help="Load recent data, one season, rebuild one season, a season range, all history, ensure full history, update the current season, export/import season bundles, enrich names, inspect DB status, or report one season.",
     )
     parser.add_argument("--db-path", default="baseball.duckdb", help="DuckDB database path.")
     parser.add_argument("--season", type=int, help="Single season to backfill.")
@@ -1042,6 +1434,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-enrich",
         action="store_true",
         help="Skip player metadata enrichment after loading new data.",
+    )
+    parser.add_argument(
+        "--skip-season-stats",
+        action="store_true",
+        help="Skip Fangraphs standard/value batting and pitching stat ingestion.",
     )
     return parser.parse_args()
 
@@ -1064,13 +1461,29 @@ if __name__ == "__main__":
         )
         if not args.skip_enrich:
             enrich_players(con)
+        if not args.skip_season_stats:
+            ingest_fangraphs_season_stats(con, today.year)
 
     elif args.mode == "season":
         if args.season is None:
             raise SystemExit("--season is required for mode 'season'")
         backfill_season(con, season=args.season, chunk_days=args.chunk_days)
+        if not args.skip_season_stats:
+            ingest_fangraphs_season_stats(con, args.season)
         if not args.skip_enrich:
             enrich_players(con)
+
+    elif args.mode == "rebuild-season":
+        if args.season is None:
+            raise SystemExit("--season is required for mode 'rebuild-season'")
+        delete_season_data(con, args.season)
+        backfill_season(con, season=args.season, chunk_days=args.chunk_days)
+        if not args.skip_season_stats:
+            ingest_fangraphs_season_stats(con, args.season)
+        if not args.skip_enrich:
+            enrich_players(con)
+        report = season_report(con, args.season)
+        log.info(f"Season report: {report}")
 
     elif args.mode == "range":
         if args.season_start is None or args.season_end is None:
@@ -1080,17 +1493,26 @@ if __name__ == "__main__":
             season_start=args.season_start,
             season_end=args.season_end,
             chunk_days=args.chunk_days,
+            include_season_stats=not args.skip_season_stats,
         )
         if not args.skip_enrich:
             enrich_players(con)
 
     elif args.mode == "all-history":
-        backfill_all_history(con, chunk_days=args.chunk_days)
+        backfill_all_history(
+            con,
+            chunk_days=args.chunk_days,
+            include_season_stats=not args.skip_season_stats,
+        )
         if not args.skip_enrich:
             enrich_players(con)
 
     elif args.mode == "ensure-history":
-        coverage = ensure_full_history(con, chunk_days=args.chunk_days)
+        coverage = ensure_full_history(
+            con,
+            chunk_days=args.chunk_days,
+            include_season_stats=not args.skip_season_stats,
+        )
         if not coverage["history_complete"]:
             raise SystemExit(
                 f"Historical coverage is still incomplete. Missing seasons: {coverage['missing_seasons']}"
@@ -1102,7 +1524,11 @@ if __name__ == "__main__":
             )
 
     elif args.mode == "current-season-update":
-        current_season_update(con, days=args.days)
+        current_season_update(
+            con,
+            days=args.days,
+            include_season_stats=not args.skip_season_stats,
+        )
 
     elif args.mode == "export-season":
         if args.season is None:
@@ -1130,3 +1556,12 @@ if __name__ == "__main__":
         log.info(f"History complete: {coverage['history_complete']}")
         log.info(f"Date span / rows: {latest}")
         log.info(f"Player name coverage: {name_coverage}")
+        if seasons:
+            last_season_report = season_report(con, seasons[-1])
+            log.info(f"Latest season report: {last_season_report}")
+
+    elif args.mode == "season-report":
+        if args.season is None:
+            raise SystemExit("--season is required for mode 'season-report'")
+        report = season_report(con, args.season)
+        log.info(f"Season report: {report}")
