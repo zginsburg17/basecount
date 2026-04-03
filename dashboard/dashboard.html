@@ -116,8 +116,8 @@
   .td-highlight { color:var(--accent); font-weight:500; }
 
   /* ── Zone grid ── */
-  .zone-grid { display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr); gap:3px; aspect-ratio:1; max-width:160px; margin:auto; }
-  .zone-cell { border-radius:2px; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:11px; font-weight:500; transition:transform 0.15s; }
+  .zone-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); grid-template-rows:repeat(3,minmax(0,1fr)); gap:6px; width:min(100%, 210px); aspect-ratio:1 / 1; margin:0 auto; }
+  .zone-cell { border-radius:2px; min-height:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:11px; font-weight:500; transition:transform 0.15s; }
   .zone-cell:hover { transform:scale(1.05); }
 
   /* ── Filter pills ── */
@@ -183,18 +183,22 @@
           </select>
         </div>
         <div id="single-season-wrap" style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Season</label>
+          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Single Season</label>
           <input type="number" id="lb-season" value="2026" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
         </div>
-        <div id="range-season-wrap" style="display:none;gap:10px;align-items:flex-end">
+        <div id="range-season-wrap" style="display:flex;gap:10px;align-items:flex-end">
           <div style="display:flex;flex-direction:column;gap:4px">
-            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">From</label>
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Range From</label>
             <input type="number" id="lb-season-start" value="2015" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">To</label>
+            <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Range To</label>
             <input type="number" id="lb-season-end" value="2026" min="2015" max="2030" style="width:78px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px">
           </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Active Scope</label>
+          <div id="topbar-scope-label" style="min-width:110px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px">2026</div>
         </div>
       </div>
       <div class="live-dot"></div>
@@ -402,14 +406,20 @@
       </div>
 
       <div class="profile-controls">
-        <div class="ctrl-group">
-          <div class="ctrl-label">Select Pitcher</div>
-          <input type="text" id="pitcher-select" class="player-select" placeholder="Start typing..." onchange="renderPitcherProfile()" list="pitcher-list" style="background:var(--bg);color:var(--text)"/>
+        <div class="ctrl-group" style="min-width:min(100%, 720px);flex:1">
+          <div class="ctrl-label">Pitcher Comparison Slots</div>
+          <div id="pitcher-compare-controls" style="display:flex;flex-direction:column;gap:10px;width:100%"></div>
           <datalist id="pitcher-list">
+            <option value="League Average"></option>
             <option value="C. Burnes"></option><option value="S. Alcantara"></option><option value="Z. Wheeler"></option>
             <option value="K. Gausman"></option><option value="G. Cole"></option><option value="M. Fried"></option>
             <option value="L. Webb"></option><option value="P. Corbin"></option>
           </datalist>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="window-tab" id="pitcher-add-slot" type="button">Add Pitcher</button>
+            <button class="window-tab" id="pitcher-remove-slot" type="button">Remove Pitcher</button>
+            <div style="display:flex;align-items:center;padding:5px 10px;border:1px solid var(--border);color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase">2-5 slots · slot 1 can be League Average</div>
+          </div>
         </div>
         <div class="ctrl-group">
           <div class="ctrl-label">Time Window</div>
@@ -424,7 +434,7 @@
       <div class="stat-row" id="pitcher-stat-cards"></div>
 
       <div class="panel">
-        <div class="panel-title">Season-by-Season Summary</div>
+        <div class="panel-title" id="pitcher-detail-title">Season-by-Season Summary</div>
         <table class="data-table">
           <thead id="pitcher-season-thead"></thead>
           <tbody id="pitcher-season-body"></tbody>
@@ -534,6 +544,7 @@
           <button class="window-tab" onclick="addSequencePitch('foul')" style="background:var(--bg);border-color:var(--accent2);color:var(--accent2)">+ Foul</button>
           <button class="window-tab" onclick="clearSequence()" style="background:var(--bg);border-color:var(--muted);color:var(--muted)">Clear</button>
         </div>
+        <div id="sequence-count-state" style="margin-top:12px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--muted);text-transform:uppercase">Count: 0-0</div>
       </div>
 
       <div class="panel">
@@ -543,17 +554,14 @@
 
       <div class="panel">
         <div class="panel-title">
-          <span>Player Comparison</span>
+          <span>Pitcher Comparison</span>
           <div style="display:flex;gap:6px">
-            <input type="text" id="seq-player-search" class="player-select" placeholder="Search player..." list="seq-player-list" style="background:var(--bg);color:var(--text);min-width:200px" onchange="updateSequencePlayer()"/>
+            <input type="text" id="seq-player-search" class="player-select" placeholder="Search pitcher..." list="seq-player-list" style="background:var(--bg);color:var(--text);min-width:220px" onchange="updateSequencePlayer()"/>
             <datalist id="seq-player-list">
               <option value="F. Freeman"></option><option value="A. Judge"></option><option value="P. Goldschmidt"></option>
               <option value="C. Burnes"></option><option value="S. Alcantara"></option><option value="Z. Wheeler"></option>
             </datalist>
-            <select class="player-select" id="seq-type-toggle" onchange="toggleSequenceType()" style="min-width:120px">
-              <option value="batter">Batter</option>
-              <option value="pitcher">Pitcher</option>
-            </select>
+            <div style="display:flex;align-items:center;padding:7px 12px;border:1px solid var(--border);background:var(--bg);color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase">Pitcher-only live view</div>
           </div>
         </div>
         <div class="stat-row" id="sequence-player-stats"></div>
@@ -579,6 +587,7 @@
       <div class="panel">
         <div class="panel-title">Pitch Mix by Position in Sequence</div>
         <div id="sequence-pitch-mix" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px"></div>
+        <div id="sequence-pitch-key" style="margin-top:14px;font-family:var(--mono);font-size:10px;line-height:1.8;color:var(--muted)"></div>
       </div>
     </div><!-- /page-pitch-sequence -->
 

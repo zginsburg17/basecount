@@ -106,8 +106,8 @@ body::before { content:''; position:fixed; inset:0; background-image:url("data:i
 .td-highlight { color:var(--accent); font-weight:500; }
 
 /* ── Zone grid ── */
-.zone-grid { display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr); gap:3px; aspect-ratio:1; max-width:160px; margin:auto; }
-.zone-cell { border-radius:2px; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:11px; font-weight:500; transition:transform 0.15s; }
+.zone-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); grid-template-rows:repeat(3,minmax(0,1fr)); gap:6px; width:min(100%, 210px); aspect-ratio:1 / 1; margin:0 auto; }
+.zone-cell { border-radius:2px; min-height:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:11px; font-weight:500; transition:transform 0.15s; }
 .zone-cell:hover { transform:scale(1.05); }
 
 /* ── Filter pills ── */

@@ -48,6 +48,9 @@ AB_EXCLUDED_EVENTS = ("walk", "intent_walk", "hit_by_pitch", "sac_fly", "sac_bun
 PLAYER_NAME_CACHE: dict[int, Optional[str]] = {}
 REGULAR_SEASON_GAME_TYPES = ("R",)
 POSTSEASON_GAME_TYPES = ("F", "D", "L", "W")
+BALL_DESCRIPTIONS = ("ball", "blocked_ball", "hit_by_pitch", "pitchout")
+STRIKE_DESCRIPTIONS = ("called_strike", "swinging_strike", "swinging_strike_blocked", "foul_tip", "missed_bunt")
+FOUL_DESCRIPTIONS = ("foul", "foul_bunt", "foul_pitchout")
 
 
 def get_con():
@@ -423,6 +426,57 @@ def inject_player_names(records: list[dict], *, id_key: str, name_key: str) -> l
     return records
 
 
+def player_search_query(role: str, search_term: str, limit: int) -> str:
+    escaped = search_term.lower().replace("'", "''")
+    like_term = f"'%{escaped}%'"
+    starts_term = f"'{escaped}%'"
+    if role == "batter":
+        return f"""
+            SELECT
+                ab.batter_id AS id,
+                {player_name_expr('Batter', 'ab.batter_id')} AS name,
+                {team_expr('ab', 'batter_id', 'batter_team')} AS team,
+                COUNT(*) AS activity
+            FROM at_bats ab
+            LEFT JOIN players pl ON pl.player_id = ab.batter_id
+            GROUP BY ab.batter_id, {player_name_expr('Batter', 'ab.batter_id')}, {team_expr('ab', 'batter_id', 'batter_team')}
+            HAVING
+                LOWER({player_name_expr('Batter', 'ab.batter_id')}) LIKE {like_term}
+                OR LOWER(COALESCE({team_expr('ab', 'batter_id', 'batter_team')}, '')) LIKE {like_term}
+                OR CAST(ab.batter_id AS VARCHAR) = {sql_quote(search_term)}
+            ORDER BY
+                CASE
+                    WHEN LOWER({player_name_expr('Batter', 'ab.batter_id')}) LIKE {starts_term} THEN 0
+                    ELSE 1
+                END,
+                activity DESC,
+                name
+            LIMIT {limit}
+        """
+    return f"""
+        SELECT
+            p.pitcher_id AS id,
+            {player_name_expr('Pitcher', 'p.pitcher_id')} AS name,
+            {team_expr('p', 'pitcher_id', 'pitcher_team')} AS team,
+            COUNT(*) AS activity
+        FROM pitches p
+        LEFT JOIN players pl ON pl.player_id = p.pitcher_id
+        GROUP BY p.pitcher_id, {player_name_expr('Pitcher', 'p.pitcher_id')}, {team_expr('p', 'pitcher_id', 'pitcher_team')}
+        HAVING
+            LOWER({player_name_expr('Pitcher', 'p.pitcher_id')}) LIKE {like_term}
+            OR LOWER(COALESCE({team_expr('p', 'pitcher_id', 'pitcher_team')}, '')) LIKE {like_term}
+            OR CAST(p.pitcher_id AS VARCHAR) = {sql_quote(search_term)}
+        ORDER BY
+            CASE
+                WHEN LOWER({player_name_expr('Pitcher', 'p.pitcher_id')}) LIKE {starts_term} THEN 0
+                ELSE 1
+            END,
+            activity DESC,
+            name
+        LIMIT {limit}
+    """
+
+
 def zone_matrix_from_rows(rows: list[tuple[int, int]]) -> list[list[int]]:
     counts = {zone: count for zone, count in rows if zone is not None}
     return [
@@ -430,6 +484,129 @@ def zone_matrix_from_rows(rows: list[tuple[int, int]]) -> list[list[int]]:
         [counts.get(4, 0), counts.get(5, 0), counts.get(6, 0)],
         [counts.get(7, 0), counts.get(8, 0), counts.get(9, 0)],
     ]
+
+
+def outcome_case_expr(alias: str = "p") -> str:
+    return f"""
+        CASE
+            WHEN {alias}.description IN {BALL_DESCRIPTIONS} THEN 'ball'
+            WHEN {alias}.description IN {STRIKE_DESCRIPTIONS} THEN 'strike'
+            WHEN {alias}.description IN {FOUL_DESCRIPTIONS} THEN 'foul'
+            ELSE NULL
+        END
+    """
+
+
+def outcome_sequence_summary(
+    con: duckdb.DuckDBPyConnection,
+    outcomes: list[str],
+    *,
+    pitcher_id: Optional[int] = None,
+    season: Optional[int] = None,
+    season_start: Optional[int] = None,
+    season_end: Optional[int] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    game_types: Optional[list[str]] = None,
+) -> dict:
+    if not outcomes:
+        return {"sequence": "", "occurrences": 0, "whiff_pct": None, "k_pct": None, "sequence_length": 0}
+
+    filters = build_filters(
+        "p",
+        season=season,
+        season_start=season_start,
+        season_end=season_end,
+        start_date=start_date,
+        end_date=end_date,
+        game_types=game_types,
+        player_col="pitcher_id" if pitcher_id is not None else None,
+        player_id=pitcher_id,
+    )
+    normalized = [outcome.strip().lower() for outcome in outcomes if outcome and outcome.strip()]
+    if not normalized:
+        return {"sequence": "", "occurrences": 0, "whiff_pct": None, "k_pct": None, "sequence_length": 0}
+
+    join_clauses = []
+    where_clauses = []
+    select_outcome = []
+    last_alias = "b0"
+    for idx, outcome in enumerate(normalized):
+        alias = f"b{idx}"
+        select_outcome.append(f"{alias}.outcome AS outcome_{idx}")
+        if idx > 0:
+            prev_alias = f"b{idx - 1}"
+            join_clauses.append(
+                f"""
+                INNER JOIN base {alias}
+                    ON {alias}.at_bat_id = {prev_alias}.at_bat_id
+                   AND {alias}.pitch_number = {prev_alias}.pitch_number + 1
+                """
+            )
+        where_clauses.append(f"{alias}.outcome = {sql_quote(outcome)}")
+        last_alias = alias
+
+    join_sql = "\n".join(join_clauses)
+    where_sql = " AND ".join(where_clauses)
+    summary = con.execute(
+        f"""
+        WITH base AS (
+            SELECT
+                CONCAT(p.game_pk, '_', p.at_bat_number) AS at_bat_id,
+                p.pitch_number,
+                p.description,
+                p.events,
+                {outcome_case_expr('p')} AS outcome
+            FROM pitches p
+            WHERE {filters}
+              AND {outcome_case_expr('p')} IS NOT NULL
+        ),
+        matched AS (
+            SELECT
+                {', '.join(select_outcome)},
+                {last_alias}.at_bat_id AS at_bat_id,
+                {last_alias}.pitch_number AS last_pitch_number,
+                {last_alias}.description AS last_description,
+                {last_alias}.events AS last_events
+            FROM base b0
+            {join_sql}
+            WHERE {where_sql}
+        ),
+        sequenced_results AS (
+            SELECT
+                m.*,
+                next_pitch.description AS next_description,
+                ab.final_event
+            FROM matched m
+            LEFT JOIN base next_pitch
+                ON next_pitch.at_bat_id = m.at_bat_id
+               AND next_pitch.pitch_number = m.last_pitch_number + 1
+            LEFT JOIN at_bats ab
+                ON ab.at_bat_id = m.at_bat_id
+        )
+        SELECT
+            COUNT(*) AS occurrences,
+            ROUND(
+                SUM(CASE WHEN next_description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT
+                / NULLIF(COUNT(*), 0),
+                3
+            ) AS whiff_pct,
+            ROUND(
+                SUM(CASE WHEN final_event IN {STRIKEOUT_EVENTS} THEN 1 ELSE 0 END)::FLOAT
+                / NULLIF(COUNT(*), 0),
+                3
+            ) AS k_pct
+        FROM sequenced_results
+        """
+    ).fetchone()
+    occurrences, whiff_pct, k_pct = summary
+    return {
+        "sequence": " -> ".join(normalized),
+        "occurrences": occurrences or 0,
+        "whiff_pct": whiff_pct,
+        "k_pct": k_pct,
+        "sequence_length": len(normalized),
+    }
 
 
 def batter_stat_query(where_sql: str) -> str:
@@ -553,6 +730,18 @@ def api_meta_coverage():
         **history_completeness(con),
         "players_status": player_name_completeness(con),
     }
+
+
+@app.get("/api/players/search")
+def api_player_search(
+    role: str = Query(..., pattern="^(batter|pitcher)$"),
+    q: str = Query(..., min_length=1),
+    limit: int = Query(25, ge=1, le=100),
+):
+    con = get_con()
+    df = con.execute(player_search_query(role, q.strip(), limit)).df()
+    records = inject_player_names(df_to_json(df), id_key="id", name_key="name")
+    return {"results": records}
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +1066,87 @@ def api_pitcher_overview(
     }
 
 
+@app.get("/api/pitching/overview")
+def api_pitching_overview(
+    season: Optional[int] = None,
+    season_start: Optional[int] = Query(None, ge=2015),
+    season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
+    window: str = Query("season", pattern="^(season|career|last7)$"),
+):
+    con = get_con()
+    resolved = resolve_window(con, window, season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
+    pitch_where = build_filters(
+        "p",
+        season=resolved["season"],
+        season_start=resolved["season_start"],
+        season_end=resolved["season_end"],
+        start_date=resolved["start_date"],
+        end_date=resolved["end_date"],
+        game_types=game_types,
+    )
+
+    summary = con.execute(pitcher_summary_query(pitch_where)).df()
+    if summary.empty or summary.iloc[0]["pitches"] in (None, 0):
+        raise HTTPException(status_code=404, detail="Pitching data not found")
+
+    seasons_df = con.execute(
+        f"""
+        SELECT
+            p.season,
+            COUNT(*) AS pitches,
+            ROUND(AVG(p.release_speed), 1) AS avg_velo,
+            ROUND(AVG(p.release_spin_rate), 0) AS avg_spin,
+            ROUND(SUM(CASE WHEN p.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS whiff_pct
+        FROM pitches p
+        WHERE {pitch_where}
+        GROUP BY p.season
+        ORDER BY p.season DESC
+        """
+    ).df()
+
+    counts_df = con.execute(
+        f"""
+        WITH pitch_counts AS (
+            SELECT
+                p.balls,
+                p.strikes,
+                p.pitch_type,
+                COUNT(*) AS pitches,
+                ROUND(COUNT(*)::FLOAT / SUM(COUNT(*)) OVER (PARTITION BY p.balls, p.strikes), 3) AS usage_pct,
+                ROUND(AVG(p.release_speed), 1) AS avg_velo,
+                ROUND(SUM(CASE WHEN p.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS whiff_pct
+            FROM pitches p
+            WHERE {pitch_where}
+              AND p.pitch_type IS NOT NULL
+            GROUP BY p.balls, p.strikes, p.pitch_type
+        )
+        SELECT *
+        FROM pitch_counts
+        ORDER BY balls, strikes, usage_pct DESC
+        """
+    ).df()
+
+    zone_rows = con.execute(
+        f"""
+        SELECT zone, COUNT(*) AS pitches
+        FROM pitches p
+        WHERE {pitch_where}
+          AND zone BETWEEN 1 AND 9
+        GROUP BY zone
+        ORDER BY zone
+        """
+    ).fetchall()
+
+    return {
+        "summary": df_to_json(summary)[0],
+        "seasons": df_to_json(seasons_df),
+        "counts": df_to_json(counts_df),
+        "zones": zone_matrix_from_rows(zone_rows),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Pitcher / Batter Existing Endpoints
 # ---------------------------------------------------------------------------
@@ -926,6 +1196,35 @@ def api_sequences(
         game_types=game_types,
     )
     return df_to_json(df)
+
+
+@app.get("/api/sequences/outcomes")
+def api_sequence_outcomes(
+    outcomes: str = Query(..., min_length=1),
+    pitcher_id: Optional[int] = None,
+    season: Optional[int] = None,
+    season_start: Optional[int] = Query(None, ge=2015),
+    season_end: Optional[int] = Query(None, ge=2015),
+    season_type: str = Query("both", pattern="^(regular|postseason|both)$"),
+):
+    con = get_con()
+    resolved = resolve_window(con, "season", season, season_start, season_end)
+    game_types = season_type_to_game_types(season_type)
+    parsed = [value.strip().lower() for value in outcomes.split(",") if value.strip()]
+    for value in parsed:
+        if value not in {"ball", "strike", "foul"}:
+            raise HTTPException(status_code=400, detail="outcomes must contain only: ball, strike, foul")
+    return outcome_sequence_summary(
+        con,
+        parsed,
+        pitcher_id=pitcher_id,
+        season=resolved["season"],
+        season_start=resolved["season_start"],
+        season_end=resolved["season_end"],
+        start_date=resolved["start_date"],
+        end_date=resolved["end_date"],
+        game_types=game_types,
+    )
 
 
 @app.get("/api/pitcher/{pitcher_id}/sequences")

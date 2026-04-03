@@ -263,6 +263,8 @@ def pitch_sequence_patterns(
                 description,
                 events,
                 LEAD(pitch_type) OVER (PARTITION BY at_bat_id ORDER BY pitch_number) AS next_pitch,
+                LEAD(description) OVER (PARTITION BY at_bat_id ORDER BY pitch_number) AS next_description,
+                LEAD(events) OVER (PARTITION BY at_bat_id ORDER BY pitch_number) AS next_events,
                 LAG(pitch_type)  OVER (PARTITION BY at_bat_id ORDER BY pitch_number) AS prev_pitch
             FROM pitches
             WHERE pitch_type IS NOT NULL
@@ -274,9 +276,9 @@ def pitch_sequence_patterns(
             pitch_type                               AS first_pitch,
             next_pitch                               AS second_pitch,
             COUNT(*)                                 AS occurrences,
-            ROUND(SUM(CASE WHEN description IN ('swinging_strike','swinging_strike_blocked')
+            ROUND(SUM(CASE WHEN next_description IN ('swinging_strike','swinging_strike_blocked')
                           THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS whiff_pct,
-            ROUND(SUM(CASE WHEN events IN ('strikeout','strikeout_double_play')
+            ROUND(SUM(CASE WHEN next_events IN ('strikeout','strikeout_double_play')
                           THEN 1 ELSE 0 END)::FLOAT / COUNT(*), 3) AS k_pct
         FROM sequenced
         WHERE next_pitch IS NOT NULL
