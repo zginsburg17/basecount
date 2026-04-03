@@ -97,6 +97,7 @@ body::before { content:''; position:fixed; inset:0; background-image:url("data:i
 .data-table td { padding:9px 10px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:12px; }
 .data-table tr:last-child td { border-bottom:none; }
 .data-table tr:hover td { background:var(--surface2); }
+.data-table tr.summary-row td { background:rgba(255,255,255,0.03); font-weight:700; }
 .td-rank { color:var(--muted); font-size:10px; }
 .td-name { font-family:var(--sans); font-weight:600; font-size:13px; color:var(--text); }
 .td-stat { text-align:right; }

@@ -6,18 +6,37 @@ BaseCount is a local baseball analytics application built on MLB Statcast pitch-
 
 The system is designed to support:
 
-- single-season analysis
-- multi-season range analysis
-- pitch-by-pitch count-state analysis
-- handedness and outs filtering
+- pitch-first baseball analytics
+- count-state and outs-aware splits
+- batter and pitcher analysis from the pitch as the base unit
 - regular season vs postseason filtering
-- batter, pitcher, leaderboard, and sequence views
+- reproducible single-season bundles that can be moved to another machine
+- a reference-season workflow that is validated before scaling to other seasons
 
-Statcast pitch-level support begins in `2015`, so the historical coverage standard for this project starts with the `2015` season and extends through the current season. As of April 2, 2026, that expected range is `2015-2026`.
+Statcast pitch-level support begins in `2015`, but the project is now being rebuilt around a single trusted reference season first: `2025`.
 
 ## Purpose
 
-This document is intended to be a complete operating manual for the project. It is written to be precise, formal, and step-by-step so that a user with limited technical background can still install, run, verify, and troubleshoot the application successfully.
+This document is intended to be a complete operating manual for the project. It is written to be precise, formal, and step-by-step so that a user with limited technical background can still install, run, verify, troubleshoot, and reproduce the project successfully.
+
+## Current Build Direction
+
+The current engineering direction for BaseCount is:
+
+1. trust one season first
+   The canonical season is `2025`
+
+2. use the pitch as the base unit
+   All higher-level analytics should be derived from pitch-level state, not from traditional at-bat-first summary tables
+
+3. materialize derived pitch-first tables
+   The project now creates season-level pitch-state and pitch-transition summary tables so the API can serve analytics and future prediction features from stable derived data
+
+3. export reproducible season bundles
+   Once a season is correct, it should be exportable as a portable bundle so another machine can rebuild the database without repeating the full live API pull
+
+4. scale only after the reference season is correct
+   Additional seasons should not be treated as complete until the `2025` workflow is stable and repeatable
 
 ## Documentation Maintenance Requirement
 
@@ -149,6 +168,15 @@ BaseCount currently supports the following data-loading modes:
 - `rebuild-season`
   Deletes one season from the local database and reloads it from the source systems. This is the safest way to fix one season without touching the rest of the database.
 
+- `reference-build`
+  Shell shortcut that rebuilds the canonical reference season `2025`.
+
+- `reference-report`
+  Shell shortcut that prints the validation report for the canonical reference season `2025`.
+
+- `reference-export`
+  Shell shortcut that exports the canonical reference season `2025` as a reusable bundle.
+
 - `range`
   Loads an inclusive range of seasons.
 
@@ -179,7 +207,10 @@ Important:
 - partial data for a season does not count as complete history coverage
 - spring training is excluded from ingestion
 - regular season and postseason are retained
-- Fangraphs standard and value batting/pitching tables are also ingested for each loaded season unless explicitly skipped
+- reproducible Parquet season bundles are a first-class part of the workflow
+- pitch-state summary tables are materialized per season so the project has a real pitch-first analytics layer
+- pitch-transition summary tables are materialized per season to support next-pitch prediction
+- external batting/pitching summary sources are supplemental, not the core source of truth
 - if a Statcast multi-day response is malformed, the ETL automatically retries and splits the date range into smaller windows
 
 For validation purposes, the project currently treats these season expectations as important checkpoints:
@@ -196,11 +227,11 @@ Note:
 
 ## Standard Workflow
 
-For most users, the standard operating procedure is:
+For most users, the current standard operating procedure is:
 
-1. Load historical data into DuckDB.
-2. Confirm the database contains the expected seasons.
-3. Enrich player names and metadata.
+1. Rebuild the `2025` reference season.
+2. Confirm the `2025` season report is correct.
+3. Export the `2025` bundle.
 4. Start the API.
 5. Open the dashboard.
 
@@ -218,17 +249,14 @@ the script defaults to `all`, which means:
 2. it backfills any missing seasons
 3. it starts the API
 
-This is stricter than the older recent-only behavior.
+This is still available, but it is not the recommended first move during the rebuild phase.
 
-If you need historical seasons, you must explicitly use one of the following:
+During the current rebuild phase, the recommended commands are:
 
 ```bash
-./run.sh all-history
-./run.sh ensure-history
-./run.sh season 2025
-./run.sh rebuild-season 2025
-./run.sh season-report 2025
-./run.sh range 2015 2025
+./run.sh reference-build
+./run.sh reference-report
+./run.sh reference-export
 ```
 
 ## Installation and First-Time Setup
@@ -245,12 +273,12 @@ cd /path/to/basecount
 
 Replace `/path/to/basecount` with the actual path to the repository on your machine.
 
-### Step 2: Ensure the full historical dataset is present
+### Step 2: Build the canonical 2025 reference season
 
 Run:
 
 ```bash
-./run.sh ensure-history
+./run.sh reference-build
 ```
 
 What this command does:
@@ -574,6 +602,9 @@ exports/season=2015/
 ├── at_bats.parquet
 ├── games.parquet
 ├── players.parquet
+├── league_pitch_state_summary.parquet
+├── player_pitch_state_summary.parquet
+├── pitch_transition_summary.parquet
 ├── batting_standard_stats.parquet
 ├── batting_value_stats.parquet
 ├── pitching_standard_stats.parquet
@@ -582,6 +613,36 @@ exports/season=2015/
 ```
 
 This is the recommended way to avoid repeatedly pulling the same season from the Statcast API.
+
+### `./run.sh reference-build`
+
+Rebuilds the canonical reference season `2025`.
+
+Example:
+
+```bash
+./run.sh reference-build
+```
+
+### `./run.sh reference-report`
+
+Prints the validation report for the canonical reference season `2025`.
+
+Example:
+
+```bash
+./run.sh reference-report
+```
+
+### `./run.sh reference-export`
+
+Exports the canonical reference season `2025` to the bundle directory.
+
+Example:
+
+```bash
+./run.sh reference-export
+```
 
 ### `./run.sh import-season <bundle_dir>`
 
@@ -643,6 +704,11 @@ Representative endpoints include:
 
 - `/api/meta/context`
 - `/api/meta/coverage`
+- `/api/reference/report`
+- `/api/pitch-state/league`
+- `/api/pitch-state/player`
+- `/api/predict/next-pitch`
+- `/api/predict/outcome-by-pitch`
 - `/api/count-state/outcome-matrix`
 - `/api/count-state/batter-splits`
 - `/api/batter/{batter_id}/overview`
@@ -658,6 +724,23 @@ Many endpoints support either:
 or:
 
 - `season_start=2018&season_end=2025`
+
+The new pitch-first endpoints are intended to become the stable foundation for future batter, pitcher, and predictive features:
+
+- `/api/reference/report`
+  validates the reference season and reports derived-table coverage
+
+- `/api/pitch-state/league`
+  returns league-level pitch outcomes for a specific count / outs / handedness state
+
+- `/api/pitch-state/player`
+  returns player-level pitch outcomes for a specific batter or pitcher in a specific state
+
+- `/api/predict/next-pitch`
+  returns the most likely next pitch type given the current state and previous pitch type
+
+- `/api/predict/outcome-by-pitch`
+  returns likely outcomes if a given pitch type is thrown in the selected state
 
 ## Dashboard Usage
 

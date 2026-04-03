@@ -360,6 +360,14 @@
             <button class="window-tab" onclick="setBatterWindow('last7',this)">Last 7</button>
           </div>
         </div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">Team Filter</div>
+          <div class="select-wrap">
+            <select id="batter-team-filter" class="player-select" onchange="setBatterTeam(this.value)">
+              <option value="all">All Teams</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <div class="stat-row" id="batter-stat-cards"></div>
@@ -427,6 +435,14 @@
             <button class="window-tab" onclick="setPitcherWindow('career',this)">Career</button>
             <button class="window-tab active" onclick="setPitcherWindow('season',this)">Season</button>
             <button class="window-tab" onclick="setPitcherWindow('last7',this)">Last 7</button>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">Team Filter</div>
+          <div class="select-wrap">
+            <select id="pitcher-team-filter" class="player-select" onchange="setPitcherTeam(this.value)">
+              <option value="all">All Teams</option>
+            </select>
           </div>
         </div>
       </div>

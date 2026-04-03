@@ -21,6 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 STATCAST_START_SEASON = 2015
+REFERENCE_SEASON = 2025
 REGULAR_SEASON_GAME_TYPES = ("R",)
 POSTSEASON_GAME_TYPES = ("F", "D", "L", "W")
 SUPPORTED_GAME_TYPES = REGULAR_SEASON_GAME_TYPES + POSTSEASON_GAME_TYPES
@@ -328,6 +329,85 @@ CREATE TABLE IF NOT EXISTS pitching_value_stats (
     lob_pct             FLOAT,
     stats_json          VARCHAR,
     updated_at          TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS league_pitch_state_summary (
+    row_key               VARCHAR PRIMARY KEY,
+    season                INTEGER NOT NULL,
+    game_type             VARCHAR(2),
+    balls                 INTEGER,
+    strikes               INTEGER,
+    outs_when_up          INTEGER,
+    stand                 VARCHAR(1),
+    p_throws              VARCHAR(1),
+    pitch_type            VARCHAR(5),
+    pitch_name            VARCHAR(30),
+    pitches               BIGINT,
+    plate_appearances     BIGINT,
+    ball_events           BIGINT,
+    called_strikes        BIGINT,
+    whiffs                BIGINT,
+    fouls                 BIGINT,
+    balls_in_play         BIGINT,
+    hit_events            BIGINT,
+    walk_events           BIGINT,
+    strikeout_events      BIGINT,
+    avg_woba_value        FLOAT,
+    avg_xwoba             FLOAT,
+    updated_at            TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS player_pitch_state_summary (
+    row_key               VARCHAR PRIMARY KEY,
+    season                INTEGER NOT NULL,
+    perspective           VARCHAR(10) NOT NULL,
+    player_id             INTEGER NOT NULL,
+    team                  VARCHAR(5),
+    game_type             VARCHAR(2),
+    balls                 INTEGER,
+    strikes               INTEGER,
+    outs_when_up          INTEGER,
+    stand                 VARCHAR(1),
+    p_throws              VARCHAR(1),
+    pitch_type            VARCHAR(5),
+    pitch_name            VARCHAR(30),
+    pitches               BIGINT,
+    plate_appearances     BIGINT,
+    ball_events           BIGINT,
+    called_strikes        BIGINT,
+    whiffs                BIGINT,
+    fouls                 BIGINT,
+    balls_in_play         BIGINT,
+    hit_events            BIGINT,
+    walk_events           BIGINT,
+    strikeout_events      BIGINT,
+    avg_woba_value        FLOAT,
+    avg_xwoba             FLOAT,
+    updated_at            TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS pitch_transition_summary (
+    row_key               VARCHAR PRIMARY KEY,
+    season                INTEGER NOT NULL,
+    perspective           VARCHAR(10) NOT NULL,
+    player_id             INTEGER,
+    game_type             VARCHAR(2),
+    balls                 INTEGER,
+    strikes               INTEGER,
+    outs_when_up          INTEGER,
+    stand                 VARCHAR(1),
+    p_throws              VARCHAR(1),
+    prev_pitch_type       VARCHAR(5),
+    next_pitch_type       VARCHAR(5),
+    transitions           BIGINT,
+    next_pitch_whiffs     BIGINT,
+    next_pitch_called_strikes BIGINT,
+    next_pitch_balls      BIGINT,
+    next_pitch_in_play    BIGINT,
+    next_pitch_hits       BIGINT,
+    next_pitch_walks      BIGINT,
+    next_pitch_strikeouts BIGINT,
+    updated_at            TIMESTAMP DEFAULT current_timestamp
 );
 """
 
@@ -672,6 +752,9 @@ def next_ingestion_run_id(con: duckdb.DuckDBPyConnection) -> int:
 def delete_season_data(con: duckdb.DuckDBPyConnection, season: int) -> None:
     log.info(f"Deleting existing data for season {season}...")
     for table_name in [
+        "pitch_transition_summary",
+        "player_pitch_state_summary",
+        "league_pitch_state_summary",
         "pitching_value_stats",
         "pitching_standard_stats",
         "batting_value_stats",
@@ -682,6 +765,308 @@ def delete_season_data(con: duckdb.DuckDBPyConnection, season: int) -> None:
         "season_backfill_status",
     ]:
         con.execute(f"DELETE FROM {table_name} WHERE season = ?", [season])
+
+
+def refresh_pitch_state_summaries(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+) -> dict:
+    log.info(f"Refreshing pitch-state summary tables for season {season}...")
+    con.execute("DELETE FROM league_pitch_state_summary WHERE season = ?", [season])
+    con.execute("DELETE FROM player_pitch_state_summary WHERE season = ?", [season])
+
+    league_sql = """
+        INSERT INTO league_pitch_state_summary
+        WITH pitch_base AS (
+            SELECT
+                season,
+                game_type,
+                balls,
+                strikes,
+                outs_when_up,
+                stand,
+                p_throws,
+                pitch_type,
+                pitch_name,
+                pitch_id,
+                at_bat_number,
+                game_pk,
+                description,
+                type,
+                events,
+                woba_value,
+                estimated_woba_using_speedangle
+            FROM pitches
+            WHERE season = ?
+        )
+        SELECT
+            CONCAT_WS(
+                ':',
+                CAST(season AS VARCHAR),
+                COALESCE(game_type, 'NA'),
+                CAST(balls AS VARCHAR),
+                CAST(strikes AS VARCHAR),
+                CAST(outs_when_up AS VARCHAR),
+                COALESCE(stand, 'NA'),
+                COALESCE(p_throws, 'NA'),
+                COALESCE(pitch_type, 'NA')
+            ) AS row_key,
+            season,
+            game_type,
+            balls,
+            strikes,
+            outs_when_up,
+            stand,
+            p_throws,
+            pitch_type,
+            any_value(pitch_name) AS pitch_name,
+            COUNT(*) AS pitches,
+            COUNT(DISTINCT CONCAT(CAST(game_pk AS VARCHAR), '_', CAST(at_bat_number AS VARCHAR))) AS plate_appearances,
+            COUNT(*) FILTER (WHERE description IN ('ball', 'blocked_ball', 'hit_by_pitch', 'pitchout')) AS ball_events,
+            COUNT(*) FILTER (WHERE description = 'called_strike') AS called_strikes,
+            COUNT(*) FILTER (WHERE description IN ('swinging_strike', 'swinging_strike_blocked', 'foul_tip', 'missed_bunt')) AS whiffs,
+            COUNT(*) FILTER (WHERE description IN ('foul', 'foul_bunt', 'foul_pitchout')) AS fouls,
+            COUNT(*) FILTER (WHERE description = 'hit_into_play' OR type = 'X') AS balls_in_play,
+            COUNT(*) FILTER (WHERE events IN ('single', 'double', 'triple', 'home_run')) AS hit_events,
+            COUNT(*) FILTER (WHERE events IN ('walk', 'intent_walk')) AS walk_events,
+            COUNT(*) FILTER (WHERE events IN ('strikeout', 'strikeout_double_play')) AS strikeout_events,
+            AVG(woba_value) AS avg_woba_value,
+            AVG(estimated_woba_using_speedangle) AS avg_xwoba,
+            current_timestamp AS updated_at
+        FROM pitch_base
+        GROUP BY
+            season, game_type, balls, strikes, outs_when_up, stand, p_throws, pitch_type
+    """
+    player_sql = """
+        INSERT INTO player_pitch_state_summary
+        WITH batter_view AS (
+            SELECT
+                season,
+                'batter' AS perspective,
+                batter_id AS player_id,
+                batter_team AS team,
+                game_type,
+                balls,
+                strikes,
+                outs_when_up,
+                stand,
+                p_throws,
+                pitch_type,
+                pitch_name,
+                game_pk,
+                at_bat_number,
+                description,
+                type,
+                events,
+                woba_value,
+                estimated_woba_using_speedangle
+            FROM pitches
+            WHERE season = ? AND batter_id IS NOT NULL
+        ),
+        pitcher_view AS (
+            SELECT
+                season,
+                'pitcher' AS perspective,
+                pitcher_id AS player_id,
+                pitcher_team AS team,
+                game_type,
+                balls,
+                strikes,
+                outs_when_up,
+                stand,
+                p_throws,
+                pitch_type,
+                pitch_name,
+                game_pk,
+                at_bat_number,
+                description,
+                type,
+                events,
+                woba_value,
+                estimated_woba_using_speedangle
+            FROM pitches
+            WHERE season = ? AND pitcher_id IS NOT NULL
+        ),
+        unioned AS (
+            SELECT * FROM batter_view
+            UNION ALL
+            SELECT * FROM pitcher_view
+        )
+        SELECT
+            CONCAT_WS(
+                ':',
+                CAST(season AS VARCHAR),
+                perspective,
+                CAST(player_id AS VARCHAR),
+                COALESCE(game_type, 'NA'),
+                CAST(balls AS VARCHAR),
+                CAST(strikes AS VARCHAR),
+                CAST(outs_when_up AS VARCHAR),
+                COALESCE(stand, 'NA'),
+                COALESCE(p_throws, 'NA'),
+                COALESCE(pitch_type, 'NA')
+            ) AS row_key,
+            season,
+            perspective,
+            player_id,
+            any_value(team) AS team,
+            game_type,
+            balls,
+            strikes,
+            outs_when_up,
+            stand,
+            p_throws,
+            pitch_type,
+            any_value(pitch_name) AS pitch_name,
+            COUNT(*) AS pitches,
+            COUNT(DISTINCT CONCAT(CAST(game_pk AS VARCHAR), '_', CAST(at_bat_number AS VARCHAR))) AS plate_appearances,
+            COUNT(*) FILTER (WHERE description IN ('ball', 'blocked_ball', 'hit_by_pitch', 'pitchout')) AS ball_events,
+            COUNT(*) FILTER (WHERE description = 'called_strike') AS called_strikes,
+            COUNT(*) FILTER (WHERE description IN ('swinging_strike', 'swinging_strike_blocked', 'foul_tip', 'missed_bunt')) AS whiffs,
+            COUNT(*) FILTER (WHERE description IN ('foul', 'foul_bunt', 'foul_pitchout')) AS fouls,
+            COUNT(*) FILTER (WHERE description = 'hit_into_play' OR type = 'X') AS balls_in_play,
+            COUNT(*) FILTER (WHERE events IN ('single', 'double', 'triple', 'home_run')) AS hit_events,
+            COUNT(*) FILTER (WHERE events IN ('walk', 'intent_walk')) AS walk_events,
+            COUNT(*) FILTER (WHERE events IN ('strikeout', 'strikeout_double_play')) AS strikeout_events,
+            AVG(woba_value) AS avg_woba_value,
+            AVG(estimated_woba_using_speedangle) AS avg_xwoba,
+            current_timestamp AS updated_at
+        FROM unioned
+        GROUP BY
+            season, perspective, player_id, game_type, balls, strikes, outs_when_up, stand, p_throws, pitch_type
+    """
+    con.execute(league_sql, [season])
+    con.execute(player_sql, [season, season])
+    summary = {
+        "league_rows": con.execute("SELECT COUNT(*) FROM league_pitch_state_summary WHERE season = ?", [season]).fetchone()[0],
+        "player_rows": con.execute("SELECT COUNT(*) FROM player_pitch_state_summary WHERE season = ?", [season]).fetchone()[0],
+    }
+    log.info("Pitch-state summaries refreshed for %s: %s", season, summary)
+    return summary
+
+
+def refresh_pitch_transition_summary(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+) -> dict:
+    log.info(f"Refreshing pitch transition summary for season {season}...")
+    con.execute("DELETE FROM pitch_transition_summary WHERE season = ?", [season])
+    transition_sql = """
+        INSERT INTO pitch_transition_summary
+        WITH base AS (
+            SELECT
+                season,
+                game_type,
+                game_pk,
+                at_bat_number,
+                pitch_number,
+                pitcher_id,
+                batter_id,
+                balls,
+                strikes,
+                outs_when_up,
+                stand,
+                p_throws,
+                pitch_type,
+                description,
+                type,
+                events,
+                LEAD(pitch_type) OVER w AS next_pitch_type,
+                LEAD(description) OVER w AS next_description,
+                LEAD(type) OVER w AS next_type,
+                LEAD(events) OVER w AS next_events
+            FROM pitches
+            WHERE season = ?
+            WINDOW w AS (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number)
+        ),
+        batter_view AS (
+            SELECT
+                season,
+                'batter' AS perspective,
+                batter_id AS player_id,
+                game_type,
+                balls,
+                strikes,
+                outs_when_up,
+                stand,
+                p_throws,
+                pitch_type AS prev_pitch_type,
+                next_pitch_type,
+                next_description,
+                next_type,
+                next_events
+            FROM base
+            WHERE batter_id IS NOT NULL AND pitch_type IS NOT NULL AND next_pitch_type IS NOT NULL
+        ),
+        pitcher_view AS (
+            SELECT
+                season,
+                'pitcher' AS perspective,
+                pitcher_id AS player_id,
+                game_type,
+                balls,
+                strikes,
+                outs_when_up,
+                stand,
+                p_throws,
+                pitch_type AS prev_pitch_type,
+                next_pitch_type,
+                next_description,
+                next_type,
+                next_events
+            FROM base
+            WHERE pitcher_id IS NOT NULL AND pitch_type IS NOT NULL AND next_pitch_type IS NOT NULL
+        ),
+        unioned AS (
+            SELECT * FROM batter_view
+            UNION ALL
+            SELECT * FROM pitcher_view
+        )
+        SELECT
+            CONCAT_WS(
+                ':',
+                CAST(season AS VARCHAR),
+                perspective,
+                COALESCE(CAST(player_id AS VARCHAR), 'NA'),
+                COALESCE(game_type, 'NA'),
+                CAST(balls AS VARCHAR),
+                CAST(strikes AS VARCHAR),
+                CAST(outs_when_up AS VARCHAR),
+                COALESCE(stand, 'NA'),
+                COALESCE(p_throws, 'NA'),
+                COALESCE(prev_pitch_type, 'NA'),
+                COALESCE(next_pitch_type, 'NA')
+            ) AS row_key,
+            season,
+            perspective,
+            player_id,
+            game_type,
+            balls,
+            strikes,
+            outs_when_up,
+            stand,
+            p_throws,
+            prev_pitch_type,
+            next_pitch_type,
+            COUNT(*) AS transitions,
+            COUNT(*) FILTER (WHERE next_description IN ('swinging_strike', 'swinging_strike_blocked', 'foul_tip', 'missed_bunt')) AS next_pitch_whiffs,
+            COUNT(*) FILTER (WHERE next_description = 'called_strike') AS next_pitch_called_strikes,
+            COUNT(*) FILTER (WHERE next_description IN ('ball', 'blocked_ball', 'hit_by_pitch', 'pitchout')) AS next_pitch_balls,
+            COUNT(*) FILTER (WHERE next_description = 'hit_into_play' OR next_type = 'X') AS next_pitch_in_play,
+            COUNT(*) FILTER (WHERE next_events IN ('single', 'double', 'triple', 'home_run')) AS next_pitch_hits,
+            COUNT(*) FILTER (WHERE next_events IN ('walk', 'intent_walk')) AS next_pitch_walks,
+            COUNT(*) FILTER (WHERE next_events IN ('strikeout', 'strikeout_double_play')) AS next_pitch_strikeouts,
+            current_timestamp AS updated_at
+        FROM unioned
+        GROUP BY
+            season, perspective, player_id, game_type, balls, strikes, outs_when_up, stand, p_throws, prev_pitch_type, next_pitch_type
+    """
+    con.execute(transition_sql, [season])
+    summary = {
+        "transition_rows": con.execute("SELECT COUNT(*) FROM pitch_transition_summary WHERE season = ?", [season]).fetchone()[0],
+    }
+    log.info("Pitch transition summaries refreshed for %s: %s", season, summary)
+    return summary
 
 
 def _serialize_stat_value(value):
@@ -845,10 +1230,14 @@ def season_report(con: duckdb.DuckDBPyConnection, season: int) -> dict:
     expectations = SEASON_VALIDATION_EXPECTATIONS.get(season, {})
     return {
         "season": season,
+        "reference_season": season == REFERENCE_SEASON,
         "regular_games": regular_games,
         "postseason_total": postseason_total,
         "postseason_breakdown": postseason_breakdown,
         "expected": expectations,
+        "league_pitch_state_rows": con.execute("SELECT COUNT(*) FROM league_pitch_state_summary WHERE season = ?", [season]).fetchone()[0],
+        "player_pitch_state_rows": con.execute("SELECT COUNT(*) FROM player_pitch_state_summary WHERE season = ?", [season]).fetchone()[0],
+        "pitch_transition_rows": con.execute("SELECT COUNT(*) FROM pitch_transition_summary WHERE season = ?", [season]).fetchone()[0],
         "batting_standard_rows": con.execute("SELECT COUNT(*) FROM batting_standard_stats WHERE season = ?", [season]).fetchone()[0],
         "batting_value_rows": con.execute("SELECT COUNT(*) FROM batting_value_stats WHERE season = ?", [season]).fetchone()[0],
         "pitching_standard_rows": con.execute("SELECT COUNT(*) FROM pitching_standard_stats WHERE season = ?", [season]).fetchone()[0],
@@ -1146,8 +1535,7 @@ def backfill_season_range(
 
     for idx, season in enumerate(range(start, end + 1)):
         total += backfill_season(con, season=season, chunk_days=chunk_days)
-        if include_season_stats:
-            ingest_fangraphs_season_stats(con, season)
+        refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
         if idx < (end - start):
             time.sleep(delay_between_seasons)
 
@@ -1258,8 +1646,7 @@ def ensure_full_history(
         log.info(f"Missing historical seasons detected: {missing}")
         for season in missing:
             backfill_season(con, season=season, chunk_days=chunk_days)
-            if include_season_stats:
-                ingest_fangraphs_season_stats(con, season)
+            refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
     else:
         log.info("Full historical season coverage already present.")
 
@@ -1282,8 +1669,24 @@ def current_season_update(
         end_date=today.strftime("%Y-%m-%d"),
     )
     enrich_players(con)
+    refresh_pitch_state_summaries(con, today.year)
     if include_season_stats:
         ingest_fangraphs_season_stats(con, today.year)
+
+
+def refresh_season_derived_data(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    *,
+    include_external_season_stats: bool = True,
+) -> dict:
+    result = {
+        "pitch_state": refresh_pitch_state_summaries(con, season),
+        "pitch_transitions": refresh_pitch_transition_summary(con, season),
+    }
+    if include_external_season_stats:
+        result["external_stats"] = ingest_fangraphs_season_stats(con, season)
+    return result
 
 
 def export_season_bundle(
@@ -1298,6 +1701,9 @@ def export_season_bundle(
     at_bats_path = export_dir / "at_bats.parquet"
     games_path = export_dir / "games.parquet"
     players_path = export_dir / "players.parquet"
+    league_pitch_state_path = export_dir / "league_pitch_state_summary.parquet"
+    player_pitch_state_path = export_dir / "player_pitch_state_summary.parquet"
+    pitch_transition_path = export_dir / "pitch_transition_summary.parquet"
     batting_standard_path = export_dir / "batting_standard_stats.parquet"
     batting_value_path = export_dir / "batting_value_stats.parquet"
     pitching_standard_path = export_dir / "pitching_standard_stats.parquet"
@@ -1327,6 +1733,15 @@ def export_season_bundle(
         """
     )
     con.execute(
+        f"COPY (SELECT * FROM league_pitch_state_summary WHERE season = {season}) TO '{league_pitch_state_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM player_pitch_state_summary WHERE season = {season}) TO '{player_pitch_state_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
+        f"COPY (SELECT * FROM pitch_transition_summary WHERE season = {season}) TO '{pitch_transition_path.as_posix()}' (FORMAT PARQUET)"
+    )
+    con.execute(
         f"COPY (SELECT * FROM batting_standard_stats WHERE season = {season}) TO '{batting_standard_path.as_posix()}' (FORMAT PARQUET)"
     )
     con.execute(
@@ -1347,6 +1762,9 @@ def export_season_bundle(
             "at_bats": at_bats_path.name,
             "games": games_path.name,
             "players": players_path.name,
+            "league_pitch_state_summary": league_pitch_state_path.name,
+            "player_pitch_state_summary": player_pitch_state_path.name,
+            "pitch_transition_summary": pitch_transition_path.name,
             "batting_standard_stats": batting_standard_path.name,
             "batting_value_stats": batting_value_path.name,
             "pitching_standard_stats": pitching_standard_path.name,
@@ -1370,6 +1788,9 @@ def import_season_bundle(
     at_bats_path = bundle_dir / "at_bats.parquet"
     games_path = bundle_dir / "games.parquet"
     players_path = bundle_dir / "players.parquet"
+    league_pitch_state_path = bundle_dir / "league_pitch_state_summary.parquet"
+    player_pitch_state_path = bundle_dir / "player_pitch_state_summary.parquet"
+    pitch_transition_path = bundle_dir / "pitch_transition_summary.parquet"
     batting_standard_path = bundle_dir / "batting_standard_stats.parquet"
     batting_value_path = bundle_dir / "batting_value_stats.parquet"
     pitching_standard_path = bundle_dir / "pitching_standard_stats.parquet"
@@ -1380,10 +1801,6 @@ def import_season_bundle(
         at_bats_path,
         games_path,
         players_path,
-        batting_standard_path,
-        batting_value_path,
-        pitching_standard_path,
-        pitching_value_path,
     ]
     missing_files = [path for path in required if not path.exists()]
     if missing_files:
@@ -1393,10 +1810,36 @@ def import_season_bundle(
     con.execute(f"INSERT OR REPLACE INTO games SELECT * FROM read_parquet('{games_path.as_posix()}')")
     con.execute(f"INSERT OR REPLACE INTO pitches SELECT * FROM read_parquet('{pitches_path.as_posix()}')")
     con.execute(f"INSERT OR REPLACE INTO at_bats SELECT * FROM read_parquet('{at_bats_path.as_posix()}')")
-    con.execute(f"INSERT OR REPLACE INTO batting_standard_stats SELECT * FROM read_parquet('{batting_standard_path.as_posix()}')")
-    con.execute(f"INSERT OR REPLACE INTO batting_value_stats SELECT * FROM read_parquet('{batting_value_path.as_posix()}')")
-    con.execute(f"INSERT OR REPLACE INTO pitching_standard_stats SELECT * FROM read_parquet('{pitching_standard_path.as_posix()}')")
-    con.execute(f"INSERT OR REPLACE INTO pitching_value_stats SELECT * FROM read_parquet('{pitching_value_path.as_posix()}')")
+    metadata = {}
+    metadata_path = bundle_dir / "metadata.json"
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text())
+    season = metadata.get("season")
+    if season is None:
+        season_row = con.execute(
+            f"SELECT MIN(season) FROM read_parquet('{pitches_path.as_posix()}')"
+        ).fetchone()
+        season = season_row[0] if season_row else None
+
+    if league_pitch_state_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO league_pitch_state_summary SELECT * FROM read_parquet('{league_pitch_state_path.as_posix()}')")
+    if player_pitch_state_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO player_pitch_state_summary SELECT * FROM read_parquet('{player_pitch_state_path.as_posix()}')")
+    if pitch_transition_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO pitch_transition_summary SELECT * FROM read_parquet('{pitch_transition_path.as_posix()}')")
+    if season is not None and (not league_pitch_state_path.exists() or not player_pitch_state_path.exists()):
+        refresh_pitch_state_summaries(con, int(season))
+    if season is not None and not pitch_transition_path.exists():
+        refresh_pitch_transition_summary(con, int(season))
+
+    if batting_standard_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO batting_standard_stats SELECT * FROM read_parquet('{batting_standard_path.as_posix()}')")
+    if batting_value_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO batting_value_stats SELECT * FROM read_parquet('{batting_value_path.as_posix()}')")
+    if pitching_standard_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO pitching_standard_stats SELECT * FROM read_parquet('{pitching_standard_path.as_posix()}')")
+    if pitching_value_path.exists():
+        con.execute(f"INSERT OR REPLACE INTO pitching_value_stats SELECT * FROM read_parquet('{pitching_value_path.as_posix()}')")
     log.info(f"Imported season bundle from {bundle_dir}")
 
 
@@ -1461,27 +1904,24 @@ if __name__ == "__main__":
         )
         if not args.skip_enrich:
             enrich_players(con)
-        if not args.skip_season_stats:
-            ingest_fangraphs_season_stats(con, today.year)
+        refresh_season_derived_data(con, today.year, include_external_season_stats=not args.skip_season_stats)
 
     elif args.mode == "season":
         if args.season is None:
             raise SystemExit("--season is required for mode 'season'")
         backfill_season(con, season=args.season, chunk_days=args.chunk_days)
-        if not args.skip_season_stats:
-            ingest_fangraphs_season_stats(con, args.season)
         if not args.skip_enrich:
             enrich_players(con)
+        refresh_season_derived_data(con, args.season, include_external_season_stats=not args.skip_season_stats)
 
     elif args.mode == "rebuild-season":
         if args.season is None:
             raise SystemExit("--season is required for mode 'rebuild-season'")
         delete_season_data(con, args.season)
         backfill_season(con, season=args.season, chunk_days=args.chunk_days)
-        if not args.skip_season_stats:
-            ingest_fangraphs_season_stats(con, args.season)
         if not args.skip_enrich:
             enrich_players(con)
+        refresh_season_derived_data(con, args.season, include_external_season_stats=not args.skip_season_stats)
         report = season_report(con, args.season)
         log.info(f"Season report: {report}")
 

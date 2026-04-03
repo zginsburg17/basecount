@@ -34,6 +34,9 @@ Usage: ./run.sh <mode> [args]
 General:
   ./run.sh api
   ./run.sh all
+  ./run.sh reference-build
+  ./run.sh reference-report
+  ./run.sh reference-export
   ./run.sh ensure-history
   ./run.sh current-season-update [days]
   ./run.sh status
@@ -46,6 +49,7 @@ ETL:
   ./run.sh recent [days]
   ./run.sh season <year> [chunk_days]
   ./run.sh rebuild-season <year> [chunk_days]
+  ./run.sh season-report <year>
   ./run.sh range <start_year> <end_year> [chunk_days]
   ./run.sh all-history [chunk_days]
   ./run.sh ensure-history [chunk_days]
@@ -58,6 +62,7 @@ Legacy aliases:
   ./run.sh etl        -> ./run.sh recent
   ./run.sh api        -> start API only
   ./run.sh all        -> ensure full history then start API
+  ./run.sh reference-* -> shortcuts for the canonical 2025 workflow
 EOF
 }
 
@@ -96,6 +101,23 @@ case "$MODE" in
         fi
         echo "Rebuilding season ${SEASON} from scratch..."
         run_etl rebuild-season --season "$SEASON" --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    reference-build)
+        CHUNK_DAYS="${2:-7}"
+        echo "Rebuilding canonical reference season 2025..."
+        run_etl rebuild-season --season 2025 --chunk-days "$CHUNK_DAYS"
+        ;;
+
+    reference-report)
+        echo "Inspecting canonical reference season 2025..."
+        run_etl season-report --season 2025
+        ;;
+
+    reference-export)
+        EXPORT_ROOT="${2:-exports}"
+        echo "Exporting canonical reference season 2025 to ${EXPORT_ROOT}..."
+        run_etl export-season --season 2025 --export-root "$EXPORT_ROOT"
         ;;
 
     range)
