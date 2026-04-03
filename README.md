@@ -55,26 +55,19 @@ This means:
 ### First time
 
 ```bash
-# 1. Pull from Statcast for the first time (saves Parquet bundles as it goes)
-./run.sh ensure-history
-
-# 2. Confirm everything looks right
-./run.sh status
-
-# 3. Start the API
-./run.sh api
-
-# 4. Open the dashboard
+./run.sh setup    # pulls from Statcast; saves Parquet bundles as it goes
+./run.sh status   # confirm everything looks right
+./run.sh api      # start the API
 open dashboard/dashboard.html
 ```
 
-> **Note:** The first run downloads all Statcast data from 2015 to today. This takes several hours. Every subsequent run skips completed seasons and loads from Parquet.
+> **Note:** `setup` downloads all Statcast data from 2015 to today. This takes several hours the first time. Every run after that skips completed seasons and loads from Parquet.
 
-### Subsequent runs (new machine or lost database)
+### New machine (Parquet bundles already exist)
 
 ```bash
-git lfs pull          # download Parquet bundles if stored in repo
-./run.sh import-all   # rebuild baseball.duckdb from local Parquet — no API calls
+git lfs pull      # download Parquet bundles
+./run.sh restore  # rebuild database from Parquet — no API calls, takes minutes
 ./run.sh api
 open dashboard/dashboard.html
 ```
@@ -82,12 +75,8 @@ open dashboard/dashboard.html
 ### Day-to-day
 
 ```bash
-# Pull games played since the last load, refresh derived tables, update Parquet
-./run.sh auto-update
-
-# Start the API
+./run.sh update   # pull new games, refresh derived tables, update Parquet bundle
 ./run.sh api
-
 open dashboard/dashboard.html
 ```
 
@@ -95,47 +84,19 @@ The dashboard will also show a banner automatically when data is stale, with an 
 
 ---
 
-## Command Reference
+## Commands
 
-### Common workflows
-
-| Command | When to use |
+| Command | What it does |
 |---------|-------------|
-| `./run.sh ensure-history` | Initial load, or after a gap. Imports from Parquet if bundles exist, pulls from API otherwise. |
-| `./run.sh import-all [export_root]` | Rebuild the database from existing Parquet bundles. No API calls. |
-| `./run.sh auto-update [export_root]` | Pull new games since last load, refresh derived tables, overwrite current season bundle. |
+| `./run.sh setup` | First-time load. Imports from Parquet if bundles exist, pulls Statcast API otherwise. Safe to re-run after gaps. |
+| `./run.sh restore` | Rebuild the database from local Parquet bundles. No API calls. Use after `git lfs pull` on a new machine. |
+| `./run.sh update` | Pull games since the last load for the current season. Refreshes derived tables and overwrites the current season bundle. |
 | `./run.sh api` | Start the API server on `http://localhost:8000`. |
-| `./run.sh status` | Show loaded seasons, completeness, row counts, player coverage. |
-
-### Loading data
-
-| Command | Description |
-|---------|-------------|
-| `./run.sh season <year>` | Load one season (Parquet if bundle exists, API otherwise). |
-| `./run.sh rebuild-season <year>` | Force re-pull one season from the API, replacing existing data. |
-| `./run.sh range <start> <end>` | Load a range of seasons, preferring Parquet for each. |
-| `./run.sh recent [days]` | Load the last N days of data (default 7). Not a backfill. |
-
-### Parquet bundles
-
-| Command | Description |
-|---------|-------------|
-| `./run.sh export-season <year> [export_root]` | Export one season to a Parquet bundle. |
-| `./run.sh export-all [export_root]` | Export all loaded seasons to Parquet. |
-| `./run.sh import-season <bundle_dir>` | Import one season bundle into the database. |
-| `./run.sh import-all [export_root]` | Import all bundles and rebuild the full database. |
-
-### Utilities
-
-| Command | Description |
-|---------|-------------|
-| `./run.sh enrich` | Resolve missing player names, handedness, position. Safe to re-run. |
-| `./run.sh season-report <year>` | Game counts, postseason breakdown, derived-table row counts. |
-| `./run.sh reference-build` | Rebuild the canonical 2025 season from scratch. |
-| `./run.sh reference-report` | Print validation report for 2025. |
-| `./run.sh all` | `ensure-history` then start the API. |
-
-Default export root is `exports/`. Pass a second argument to override: `./run.sh export-all /data/bundles`.
+| `./run.sh status` | Show loaded seasons, completeness, row counts, player-name coverage. |
+| `./run.sh export [year]` | Export Parquet bundles. Omit year for all seasons; pass a year for one. |
+| `./run.sh rebuild <year>` | Force re-pull one season from the Statcast API, replacing existing data and bundle. |
+| `./run.sh report <year>` | Season validation report: game counts, postseason breakdown, derived-table row counts. |
+| `./run.sh enrich` | Resolve missing player names, handedness, and position. Safe to re-run. |
 
 ---
 
@@ -148,14 +109,14 @@ Each season bundle is ~40–70 MB. The `.gitattributes` file already configures 
 git lfs install
 
 # After a full load, commit all bundles
-./run.sh export-all
+./run.sh export
 git add exports/
 git commit -m "Add season Parquet bundles"
 git push
 
 # New machine: pull bundles and rebuild DB
 git lfs pull
-./run.sh import-all
+./run.sh restore
 ```
 
 ---
@@ -261,8 +222,8 @@ Server: `http://localhost:8000` — Interactive docs: `http://localhost:8000/doc
 
 **Dashboard is blank** → confirm the API is running (`./run.sh api`), check `http://localhost:8000/docs`, and verify `./run.sh status` shows loaded seasons.
 
-**Only one season appears** → the database was seeded with `recent` instead of a full load. Run `./run.sh ensure-history`.
+**Only one season appears** → the database was seeded with only recent data. Run `./run.sh setup` to fill all seasons.
 
 **First load is slow** → expected. Statcast history is large and the pipeline is conservative with API requests to avoid rate-limiting. Every load after the first is fast (Parquet).
 
-**Lost the database** → `./run.sh import-all` rebuilds it from Parquet in minutes.
+**Lost the database** → `./run.sh restore` rebuilds it from Parquet in minutes.
