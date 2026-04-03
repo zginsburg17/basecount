@@ -1,4 +1,5 @@
 const API_BASE = "http://localhost:8000/api";
+const ACTIVE_PAGE_KEY = "basecount.activePage";
 
 const state = {
   count: { balls: null, strikes: null, outs: null, sort: "xwoba", batterHand: "all", pitcherHand: "all" },
@@ -417,7 +418,7 @@ function selectedSeasonEnd() {
 function activeSeasonQuery(windowName = "season") {
   const mode = document.getElementById("scope-mode")?.value || state.scope.mode;
   const seasonType = document.getElementById("season-type")?.value || state.scope.seasonType || "regular";
-  if (windowName === "last7" || windowName === "career") {
+  if (windowName === "career") {
     return { window: windowName, season_type: seasonType };
   }
 
@@ -433,7 +434,6 @@ function activeSeasonQuery(windowName = "season") {
 function activeSeasonLabel(windowName = "season") {
   const mode = document.getElementById("scope-mode")?.value || state.scope.mode;
   if (windowName === "career") return "All loaded seasons";
-  if (windowName === "last7") return "Last 7 days";
   if (mode === "range") {
     const start = Math.min(selectedSeasonStart(), selectedSeasonEnd());
     const end = Math.max(selectedSeasonStart(), selectedSeasonEnd());
@@ -451,8 +451,8 @@ function syncScopeControls() {
   const rangeStart = document.getElementById("lb-season-start");
   const rangeEnd = document.getElementById("lb-season-end");
 
-  singleWrap.style.opacity = mode === "single" ? "1" : "0.45";
-  rangeWrap.style.opacity = mode === "range" ? "1" : "0.45";
+  singleWrap.style.display = mode === "single" ? "flex" : "none";
+  rangeWrap.style.display = mode === "range" ? "flex" : "none";
   singleInput.disabled = mode !== "single";
   rangeStart.disabled = mode !== "range";
   rangeEnd.disabled = mode !== "range";
@@ -1111,10 +1111,18 @@ async function renderSequencePage() {
 
 function setPage(page, navEl) {
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
-  if (navEl) navEl.classList.add("active");
+  if (navEl) {
+    navEl.classList.add("active");
+  } else {
+    const fallback = Array.from(document.querySelectorAll(".nav-item")).find((el) => el.getAttribute("onclick")?.includes(`'${page}'`));
+    if (fallback) fallback.classList.add("active");
+  }
   document.querySelectorAll(".page-section").forEach((el) => el.classList.remove("active"));
   document.getElementById(`page-${page}`).classList.add("active");
   state.page = page;
+  try {
+    window.localStorage.setItem(ACTIVE_PAGE_KEY, page);
+  } catch (_) {}
   if (page === "count") renderCountPage();
   if (page === "batter") renderBatterProfile();
   if (page === "pitcher") renderPitcherProfile();
@@ -1355,15 +1363,18 @@ async function refreshData() {
   cache.leaguePitchingOverview.clear();
   cache.teamOverview.clear();
   await loadMetaContext();
+  if (state.page === "count") await renderCountPage();
   if (state.page === "batter") await renderBatterProfile();
   if (state.page === "pitcher") await renderPitcherProfile();
   if (state.page === "team") await renderTeamProfile();
   if (state.page === "leaderboard") await renderLeaderboard();
   if (state.page === "pitch-sequence") await renderSequencePage();
-  await renderCountPage();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    state.page = window.localStorage.getItem(ACTIVE_PAGE_KEY) || state.page;
+  } catch (_) {}
   await loadMetaContext();
 
   bindPlayerSearch("batter-select", "batter");
@@ -1452,5 +1463,5 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderSequencePage();
   });
 
-  await renderCountPage();
+  setPage(state.page || "count");
 });
