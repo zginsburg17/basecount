@@ -416,15 +416,6 @@ CREATE TABLE IF NOT EXISTS pitch_transition_summary (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def build_base_state(row) -> str:
-    """Encode runner presence as a 3-char bitmask string: '1B 2B 3B' -> '101' etc."""
-    return "".join([
-        "1" if pd.notna(row.get("on_1b")) else "0",
-        "1" if pd.notna(row.get("on_2b")) else "0",
-        "1" if pd.notna(row.get("on_3b")) else "0",
-    ])
-
-
 def clean_statcast(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize raw pybaseball Statcast DataFrame into our schema shape."""
     df = df.copy()
@@ -715,7 +706,6 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
         ])
         updated += 1
 
-    unresolved = max(len(stub_ids) - len(name_map), 0)
     fallback_resolved = sum(1 for profile in fallback_profiles.values() if profile.get("full_name"))
     total_resolved = len(name_map) + fallback_resolved
     unresolved = max(len(stub_ids) - total_resolved, 0)
@@ -724,7 +714,54 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
         f"(names resolved via pybaseball: {len(name_map)}, "
         f"via MLB Stats API: {fallback_resolved}, unresolved: {unresolved})"
     )
+
+    # Always refresh team associations for ALL players (not just stubs)
+    refresh_player_teams(con)
+
     return updated
+
+
+def refresh_player_teams(con: duckdb.DuckDBPyConnection) -> int:
+    """
+    Update the team column for ALL players based on their most recent
+    appearance in pitches data.  Unlike enrich_players (which only touches
+    stubs where full_name IS NULL), this keeps team associations current
+    after trades, free-agency moves, or new season data loads.
+    """
+    # Build a temp table of the most recent team for each player
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _latest_teams AS
+        WITH raw AS (
+            SELECT pitcher_id AS player_id,
+                   first(pitcher_team ORDER BY game_date DESC)
+                     FILTER (WHERE pitcher_team IS NOT NULL) AS team
+            FROM pitches WHERE pitcher_id IS NOT NULL
+            GROUP BY pitcher_id
+            UNION ALL
+            SELECT batter_id AS player_id,
+                   first(batter_team ORDER BY game_date DESC)
+                     FILTER (WHERE batter_team IS NOT NULL) AS team
+            FROM pitches WHERE batter_id IS NOT NULL
+            GROUP BY batter_id
+        )
+        SELECT player_id, first(team) AS team
+        FROM raw WHERE team IS NOT NULL
+        GROUP BY player_id
+    """)
+    changed = con.execute("""
+        SELECT COUNT(*) FROM _latest_teams lt
+        JOIN players p ON p.player_id = lt.player_id
+        WHERE p.team IS DISTINCT FROM lt.team
+    """).fetchone()[0]
+    con.execute("""
+        UPDATE players SET team = lt.team, updated_at = current_timestamp
+        FROM _latest_teams lt
+        WHERE players.player_id = lt.player_id
+          AND players.team IS DISTINCT FROM lt.team
+    """)
+    con.execute("DROP TABLE IF EXISTS _latest_teams")
+    log.info(f"Player teams refreshed: {changed} updated.")
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -1621,19 +1658,6 @@ def completed_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
     ]
 
 
-def expected_statcast_seasons(current_year: Optional[int] = None) -> list[int]:
-    return available_statcast_seasons(current_year=current_year)
-
-
-def missing_statcast_seasons(
-    con: duckdb.DuckDBPyConnection,
-    current_year: Optional[int] = None,
-) -> list[int]:
-    loaded = set(loaded_seasons(con))
-    expected = expected_statcast_seasons(current_year=current_year)
-    return [season for season in expected if season not in loaded]
-
-
 def player_name_coverage(con: duckdb.DuckDBPyConnection) -> dict:
     total_players, named_players, unnamed_players, team_players = con.execute(
         """
@@ -1658,7 +1682,7 @@ def verify_history_coverage(
     con: duckdb.DuckDBPyConnection,
     current_year: Optional[int] = None,
 ) -> dict:
-    expected = expected_statcast_seasons(current_year=current_year)
+    expected = available_statcast_seasons(current_year=current_year)
     loaded = loaded_seasons(con)
     completed = completed_seasons(con)
     missing = [season for season in expected if season not in set(completed)]
