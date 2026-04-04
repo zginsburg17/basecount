@@ -1,6 +1,24 @@
 const API_BASE = "http://localhost:8000/api";
 const ACTIVE_PAGE_KEY = "basecount.activePage";
 
+// ---------------------------------------------------------------------------
+// Team logos — MLB team IDs mapped from abbreviations for CDN URLs
+// ---------------------------------------------------------------------------
+const TEAM_IDS = {
+  ARI:109,ATL:144,BAL:110,BOS:111,CHC:112,CIN:113,CLE:114,COL:115,
+  CWS:145,DET:116,HOU:117,KC:118,LAA:108,LAD:119,MIA:146,MIL:158,
+  MIN:142,NYM:121,NYY:147,OAK:133,PHI:143,PIT:134,SD:135,SEA:136,
+  SF:137,STL:138,TB:139,TEX:140,TOR:141,WSH:120,
+};
+function teamLogoUrl(abbr) {
+  const id = TEAM_IDS[(abbr || "").toUpperCase()];
+  return id ? `https://www.mlb.com/assets/images/logos/team-cap-on-dark/${id}.svg` : "";
+}
+function teamLogoImg(abbr, size = 18) {
+  const url = teamLogoUrl(abbr);
+  return url ? `<img src="${url}" alt="${abbr}" class="team-logo" width="${size}" height="${size}" onerror="this.style.display='none'">` : "";
+}
+
 const state = {
   count: { balls: null, strikes: null, outs: null, sort: "xwoba", batterHand: "all", pitcherHand: "all" },
   batter: { selectedId: null, window: "season", balls: 0, strikes: 0, team: "all" },
@@ -299,7 +317,6 @@ function populatePlayerLists() {
 function playerOptionLabel(player) {
   return player?.team ? `${player.name} · ${player.team}` : player?.name || "";
 }
-
 function lookupPlayerByName(role, name) {
   const players = role === "batter" ? state.players.batters : state.players.pitchers;
   return players.find((player) => {
@@ -788,7 +805,7 @@ async function renderBatterProfile() {
     <div class="stat-card">
       <div class="stat-label">AVG / OBP / SLG</div>
       <div class="stat-value sm" style="color:var(--accent)">${fmtRate(slash.avg)} / ${fmtRate(slash.obp)} / ${fmtRate(slash.slg)}</div>
-      <div class="stat-delta">${fmtInt(profile.summary.pa)} PA${profile.summary.team_display ? ` · ${profile.summary.team_display}` : ""}</div>
+      <div class="stat-delta">${fmtInt(profile.summary.pa)} PA${profile.summary.team_display ? ` · ${teamLogoImg(profile.summary.team_display)} ${profile.summary.team_display}` : ""}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">xwOBA</div>
@@ -811,7 +828,7 @@ async function renderBatterProfile() {
   document.getElementById("batter-season-body").innerHTML = seasonRows.map((row) => `
     <tr class="${row.rowType === "total" ? "summary-row" : ""}">
       <td class="td-name">${row.season}</td>
-      <td class="td-name" style="font-size:12px;color:${row.rowType === "total" ? "var(--text)" : "var(--accent3)"}">${row.team || "—"}</td>
+      <td class="td-name" style="font-size:12px;color:${row.rowType === "total" ? "var(--text)" : "var(--accent3)"}">${row.team ? teamLogoImg(row.team) + " " + row.team : "—"}</td>
       <td class="td-stat">${fmtInt(row.g)}</td>
       <td class="td-stat">${fmtInt(row.pa)}</td>
       <td class="td-stat">${fmtInt(row.ab)}</td>
@@ -892,7 +909,7 @@ async function renderPitcherProfile() {
     <div class="stat-card">
       <div class="stat-label">Pitches</div>
       <div class="stat-value sm" style="color:var(--accent)">${fmtInt(profile.summary.pitches)}</div>
-      <div class="stat-delta">${playerLabel("pitcher", state.pitcher.selectedId)}${profile.summary.team_display ? ` · ${profile.summary.team_display}` : ""}</div>
+      <div class="stat-delta">${playerLabel("pitcher", state.pitcher.selectedId)}${profile.summary.team_display ? ` · ${teamLogoImg(profile.summary.team_display)} ${profile.summary.team_display}` : ""}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Avg Velocity</div>
@@ -916,7 +933,7 @@ async function renderPitcherProfile() {
   document.getElementById("pitcher-season-body").innerHTML = seasonRows.map((row) => `
     <tr class="${row.rowType === "total" ? "summary-row" : ""}">
       <td class="td-name">${row.season}</td>
-      <td class="td-name" style="font-size:12px;color:${row.rowType === "total" ? "var(--text)" : "var(--accent3)"}">${row.team || "—"}</td>
+      <td class="td-name" style="font-size:12px;color:${row.rowType === "total" ? "var(--text)" : "var(--accent3)"}">${row.team ? teamLogoImg(row.team) + " " + row.team : "—"}</td>
       <td class="td-stat">${fmtInt(row.g)}</td>
       <td class="td-stat">${fmtInt(row.pitches)}</td>
       <td class="td-stat">${fmtNum(row.avg_velo, 1)}</td>
@@ -1202,7 +1219,7 @@ async function renderTeamProfile() {
   document.getElementById("team-stat-cards").innerHTML = `
     <div class="stat-card">
       <div class="stat-label">Team / Games</div>
-      <div class="stat-value sm" style="color:var(--accent)">${summary.team || state.team.selected}</div>
+      <div class="stat-value sm" style="color:var(--accent)">${teamLogoImg(state.team.selected, 22)} ${summary.team || state.team.selected}</div>
       <div class="stat-delta">${fmtInt(summary.games)} games in ${activeSeasonLabel("season")}</div>
     </div>
     <div class="stat-card">
@@ -1470,4 +1487,76 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   setPage(state.page || "count");
+  checkFreshness();
 });
+
+// ---------------------------------------------------------------------------
+// Freshness banner + sync
+// ---------------------------------------------------------------------------
+
+let _syncPollInterval = null;
+
+async function checkFreshness() {
+  try {
+    const data = await fetch(`${API_BASE}/api/admin/freshness`).then(r => r.json());
+    const banner = document.getElementById("sync-banner");
+    const msg = document.getElementById("sync-banner-msg");
+    const btn = document.getElementById("sync-btn");
+    if (!data || data.up_to_date) {
+      banner.className = "sync-banner";
+      return;
+    }
+    const days = data.days_stale;
+    msg.textContent = days === null
+      ? "No data loaded for the current season."
+      : `Data is ${days} day${days === 1 ? "" : "s"} behind (last game: ${data.latest_game_date}).`;
+    banner.className = "sync-banner stale";
+    btn.style.display = "inline-block";
+  } catch (_) {
+    // If the freshness endpoint fails, stay quiet — API might not be running
+  }
+}
+
+async function triggerSync() {
+  const banner = document.getElementById("sync-banner");
+  const msg = document.getElementById("sync-banner-msg");
+  const btn = document.getElementById("sync-btn");
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/sync`, { method: "POST" }).then(r => r.json());
+    msg.textContent = (!res.started && res.reason === "sync already running")
+      ? "Sync already in progress..."
+      : "Pulling missing games in the background...";
+    btn.style.display = "none";
+    banner.className = "sync-banner syncing";
+    _syncPollInterval = setInterval(pollSyncStatus, 3000);
+  } catch (_) {}
+}
+
+async function pollSyncStatus() {
+  try {
+    const data = await fetch(`${API_BASE}/api/admin/sync-status`).then(r => r.json());
+    const banner = document.getElementById("sync-banner");
+    const msg = document.getElementById("sync-banner-msg");
+    const btn = document.getElementById("sync-btn");
+    if (data.status === "done") {
+      clearInterval(_syncPollInterval);
+      _syncPollInterval = null;
+      banner.className = "sync-banner done";
+      msg.textContent = "Data updated. Reload the page to see the latest stats.";
+      btn.textContent = "Reload";
+      btn.onclick = () => location.reload();
+      btn.style.display = "inline-block";
+    } else if (data.status === "error") {
+      clearInterval(_syncPollInterval);
+      _syncPollInterval = null;
+      banner.className = "sync-banner error";
+      msg.textContent = "Sync failed: " + (data.error || "unknown error");
+      btn.textContent = "Retry";
+      btn.onclick = triggerSync;
+      btn.style.display = "inline-block";
+    }
+  } catch (_) {
+    clearInterval(_syncPollInterval);
+    _syncPollInterval = null;
+  }
+}

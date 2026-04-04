@@ -416,15 +416,6 @@ CREATE TABLE IF NOT EXISTS pitch_transition_summary (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def build_base_state(row) -> str:
-    """Encode runner presence as a 3-char bitmask string: '1B 2B 3B' -> '101' etc."""
-    return "".join([
-        "1" if pd.notna(row.get("on_1b")) else "0",
-        "1" if pd.notna(row.get("on_2b")) else "0",
-        "1" if pd.notna(row.get("on_3b")) else "0",
-    ])
-
-
 def clean_statcast(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize raw pybaseball Statcast DataFrame into our schema shape."""
     df = df.copy()
@@ -715,7 +706,6 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
         ])
         updated += 1
 
-    unresolved = max(len(stub_ids) - len(name_map), 0)
     fallback_resolved = sum(1 for profile in fallback_profiles.values() if profile.get("full_name"))
     total_resolved = len(name_map) + fallback_resolved
     unresolved = max(len(stub_ids) - total_resolved, 0)
@@ -724,7 +714,54 @@ def enrich_players(con: duckdb.DuckDBPyConnection, batch_size: int = 500) -> int
         f"(names resolved via pybaseball: {len(name_map)}, "
         f"via MLB Stats API: {fallback_resolved}, unresolved: {unresolved})"
     )
+
+    # Always refresh team associations for ALL players (not just stubs)
+    refresh_player_teams(con)
+
     return updated
+
+
+def refresh_player_teams(con: duckdb.DuckDBPyConnection) -> int:
+    """
+    Update the team column for ALL players based on their most recent
+    appearance in pitches data.  Unlike enrich_players (which only touches
+    stubs where full_name IS NULL), this keeps team associations current
+    after trades, free-agency moves, or new season data loads.
+    """
+    # Build a temp table of the most recent team for each player
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _latest_teams AS
+        WITH raw AS (
+            SELECT pitcher_id AS player_id,
+                   first(pitcher_team ORDER BY game_date DESC)
+                     FILTER (WHERE pitcher_team IS NOT NULL) AS team
+            FROM pitches WHERE pitcher_id IS NOT NULL
+            GROUP BY pitcher_id
+            UNION ALL
+            SELECT batter_id AS player_id,
+                   first(batter_team ORDER BY game_date DESC)
+                     FILTER (WHERE batter_team IS NOT NULL) AS team
+            FROM pitches WHERE batter_id IS NOT NULL
+            GROUP BY batter_id
+        )
+        SELECT player_id, first(team) AS team
+        FROM raw WHERE team IS NOT NULL
+        GROUP BY player_id
+    """)
+    changed = con.execute("""
+        SELECT COUNT(*) FROM _latest_teams lt
+        JOIN players p ON p.player_id = lt.player_id
+        WHERE p.team IS DISTINCT FROM lt.team
+    """).fetchone()[0]
+    con.execute("""
+        UPDATE players SET team = lt.team, updated_at = current_timestamp
+        FROM _latest_teams lt
+        WHERE players.player_id = lt.player_id
+          AND players.team IS DISTINCT FROM lt.team
+    """)
+    con.execute("DROP TABLE IF EXISTS _latest_teams")
+    log.info(f"Player teams refreshed: {changed} updated.")
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -1553,18 +1590,33 @@ def backfill_season_range(
     chunk_days: int = 7,
     delay_between_seasons: float = 5.0,
     include_season_stats: bool = True,
+    export_root: str = "exports",
 ) -> int:
-    """Backfill an inclusive season range."""
+    """Load an inclusive range of seasons, preferring Parquet bundles over API pulls.
+
+    For each season, :func:`load_season_smart` is called: if a Parquet bundle
+    exists it is imported instantly; otherwise the season is pulled from the
+    Statcast API and then exported for future use.
+    """
     start, end = sorted((season_start, season_end))
     total = 0
 
     for idx, season in enumerate(range(start, end + 1)):
-        total += backfill_season(con, season=season, chunk_days=chunk_days)
-        refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
-        if idx < (end - start):
+        source = load_season_smart(
+            con,
+            season=season,
+            chunk_days=chunk_days,
+            export_root=export_root,
+            include_season_stats=include_season_stats,
+        )
+        row = con.execute("SELECT COUNT(*) FROM pitches WHERE season = ?", [season]).fetchone()
+        season_rows = row[0] if row else 0
+        total += season_rows
+        log.info(f"Season {season} loaded via {source} ({season_rows:,} pitches).")
+        if idx < (end - start) and source == "api":
             time.sleep(delay_between_seasons)
 
-    log.info(f"Historical backfill {start}-{end} complete. Total pitches: {total:,}")
+    log.info(f"Range {start}-{end} complete. Total pitches: {total:,}")
     return total
 
 
@@ -1606,19 +1658,6 @@ def completed_seasons(con: duckdb.DuckDBPyConnection) -> list[int]:
     ]
 
 
-def expected_statcast_seasons(current_year: Optional[int] = None) -> list[int]:
-    return available_statcast_seasons(current_year=current_year)
-
-
-def missing_statcast_seasons(
-    con: duckdb.DuckDBPyConnection,
-    current_year: Optional[int] = None,
-) -> list[int]:
-    loaded = set(loaded_seasons(con))
-    expected = expected_statcast_seasons(current_year=current_year)
-    return [season for season in expected if season not in loaded]
-
-
 def player_name_coverage(con: duckdb.DuckDBPyConnection) -> dict:
     total_players, named_players, unnamed_players, team_players = con.execute(
         """
@@ -1643,7 +1682,7 @@ def verify_history_coverage(
     con: duckdb.DuckDBPyConnection,
     current_year: Optional[int] = None,
 ) -> dict:
-    expected = expected_statcast_seasons(current_year=current_year)
+    expected = available_statcast_seasons(current_year=current_year)
     loaded = loaded_seasons(con)
     completed = completed_seasons(con)
     missing = [season for season in expected if season not in set(completed)]
@@ -1663,15 +1702,29 @@ def ensure_full_history(
     con: duckdb.DuckDBPyConnection,
     chunk_days: int = 7,
     include_season_stats: bool = True,
+    export_root: str = "exports",
 ) -> dict:
+    """Ensure every expected Statcast season is loaded in the database.
+
+    For each missing season, Parquet bundles are checked first.  A season is
+    only pulled from the Statcast API when no bundle exists on disk — and once
+    pulled, a bundle is immediately written so the API is never called again
+    for that season.
+    """
     coverage = verify_history_coverage(con)
     missing = coverage["missing_seasons"]
 
     if missing:
         log.info(f"Missing historical seasons detected: {missing}")
         for season in missing:
-            backfill_season(con, season=season, chunk_days=chunk_days)
-            refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
+            source = load_season_smart(
+                con,
+                season=season,
+                chunk_days=chunk_days,
+                export_root=export_root,
+                include_season_stats=include_season_stats,
+            )
+            log.info(f"Season {season} loaded via {source}.")
     else:
         log.info("Full historical season coverage already present.")
 
@@ -1712,6 +1765,48 @@ def refresh_season_derived_data(
     if include_external_season_stats:
         result["external_stats"] = ingest_fangraphs_season_stats(con, season)
     return result
+
+
+def bundle_exists(season: int, export_root: str = "exports") -> bool:
+    """Return True if a valid Parquet bundle exists for *season*.
+
+    A bundle is considered valid when at minimum ``pitches.parquet`` is
+    present inside ``<export_root>/season=<season>/``.  This is the gate
+    used by :func:`load_season_smart` to decide between a Parquet import
+    and a live Statcast API pull.
+    """
+    return (Path(export_root) / f"season={season}" / "pitches.parquet").exists()
+
+
+def load_season_smart(
+    con: duckdb.DuckDBPyConnection,
+    season: int,
+    chunk_days: int = 7,
+    export_root: str = "exports",
+    include_season_stats: bool = True,
+) -> str:
+    """Load one season — from Parquet if a bundle exists, from Statcast otherwise.
+
+    This is the primary entry-point for loading historical seasons.  The rule
+    is simple:
+
+    * **Bundle exists** → ``import_season_bundle()`` (fast, no API calls).
+    * **No bundle** → ``backfill_season()`` from the Statcast API, then
+      ``export_season_bundle()`` so future runs never hit the API again.
+
+    Returns ``"parquet"`` or ``"api"`` indicating which path was taken.
+    """
+    if bundle_exists(season, export_root=export_root):
+        log.info(f"Season {season}: Parquet bundle found — importing (no API call).")
+        import_season_bundle(con, str(Path(export_root) / f"season={season}"))
+        return "parquet"
+
+    log.info(f"Season {season}: No bundle found — pulling from Statcast API.")
+    backfill_season(con, season=season, chunk_days=chunk_days)
+    refresh_season_derived_data(con, season, include_external_season_stats=include_season_stats)
+    export_season_bundle(con, season=season, export_root=export_root)
+    log.info(f"Season {season}: Exported to {export_root}/season={season}/ for future use.")
+    return "api"
 
 
 def export_season_bundle(
@@ -1846,6 +1941,72 @@ def import_season_bundle(
     log.info(f"Imported season bundle from {bundle_dir}")
 
 
+def auto_update_current_season(
+    con: duckdb.DuckDBPyConnection,
+    export_root: str = "exports",
+    include_season_stats: bool = True,
+) -> dict:
+    """
+    Pull any games played since the last loaded game date, then overwrite the
+    current season's Parquet bundle.
+
+    Flow:
+      1. Find the latest game_date in the DB for the current calendar year.
+      2. If no data exists yet, run a full season backfill.
+      3. Otherwise load from (latest_date + 1) through today.
+      4. Re-enrich players, refresh derived tables, overwrite Parquet bundle.
+
+    Returns a summary dict: rows_added, latest_game_date, season, up_to_date.
+    """
+    today = date.today()
+    current_season = today.year
+
+    row = con.execute(
+        "SELECT MAX(game_date) FROM pitches WHERE season = ?", [current_season]
+    ).fetchone()
+    latest_date = row[0] if row and row[0] else None
+
+    if latest_date is None:
+        log.info(f"No data found for {current_season}. Running full season backfill...")
+        rows_added = backfill_season(con, season=current_season, chunk_days=7)
+    else:
+        if not isinstance(latest_date, date):
+            latest_date = datetime.strptime(str(latest_date), "%Y-%m-%d").date()
+        start = latest_date + timedelta(days=1)
+        if start > today:
+            log.info(f"Already up to date through {latest_date}.")
+            return {
+                "rows_added": 0,
+                "latest_game_date": str(latest_date),
+                "season": current_season,
+                "up_to_date": True,
+            }
+        log.info(f"Pulling missing games: {start} → {today}")
+        rows_added = load_date_range(
+            con,
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=today.strftime("%Y-%m-%d"),
+        )
+
+    enrich_players(con)
+    refresh_season_derived_data(con, current_season, include_external_season_stats=include_season_stats)
+
+    # Overwrite the current season's Parquet bundle with the refreshed data.
+    export_dir = export_season_bundle(con, season=current_season, export_root=export_root)
+
+    new_latest = con.execute(
+        "SELECT MAX(game_date) FROM pitches WHERE season = ?", [current_season]
+    ).fetchone()[0]
+
+    return {
+        "rows_added": rows_added,
+        "latest_game_date": str(new_latest) if new_latest else None,
+        "season": current_season,
+        "up_to_date": False,
+        "export_dir": str(export_dir),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load Statcast data into DuckDB.")
     parser.add_argument(
@@ -1860,13 +2021,21 @@ def parse_args() -> argparse.Namespace:
             "all-history",
             "ensure-history",
             "current-season-update",
+            "auto-update",
             "export-season",
+            "export-all",
             "import-season",
+            "import-all",
             "enrich",
             "status",
             "season-report",
         ],
-        help="Load recent data, one season, rebuild one season, a season range, all history, ensure full history, update the current season, export/import season bundles, enrich names, inspect DB status, or report one season.",
+        help=(
+            "Load recent data, one season, rebuild a season, a season range, "
+            "all history, ensure full history, update/auto-update the current "
+            "season, export/import season bundles (one or all), enrich player "
+            "names, inspect DB status, or report one season."
+        ),
     )
     parser.add_argument("--db-path", default="baseball.duckdb", help="DuckDB database path.")
     parser.add_argument("--season", type=int, help="Single season to backfill.")
@@ -1912,10 +2081,15 @@ if __name__ == "__main__":
     elif args.mode == "season":
         if args.season is None:
             raise SystemExit("--season is required for mode 'season'")
-        backfill_season(con, season=args.season, chunk_days=args.chunk_days)
+        load_season_smart(
+            con,
+            season=args.season,
+            chunk_days=args.chunk_days,
+            export_root=args.export_root,
+            include_season_stats=not args.skip_season_stats,
+        )
         if not args.skip_enrich:
             enrich_players(con)
-        refresh_season_derived_data(con, args.season, include_external_season_stats=not args.skip_season_stats)
 
     elif args.mode == "rebuild-season":
         if args.season is None:
@@ -1937,6 +2111,7 @@ if __name__ == "__main__":
             season_end=args.season_end,
             chunk_days=args.chunk_days,
             include_season_stats=not args.skip_season_stats,
+            export_root=args.export_root,
         )
         if not args.skip_enrich:
             enrich_players(con)
@@ -1955,6 +2130,7 @@ if __name__ == "__main__":
             con,
             chunk_days=args.chunk_days,
             include_season_stats=not args.skip_season_stats,
+            export_root=args.export_root,
         )
         if not coverage["history_complete"]:
             raise SystemExit(
@@ -1982,6 +2158,35 @@ if __name__ == "__main__":
         if not args.import_dir:
             raise SystemExit("--import-dir is required for mode 'import-season'")
         import_season_bundle(con, args.import_dir)
+
+    elif args.mode == "auto-update":
+        result = auto_update_current_season(
+            con,
+            export_root=args.export_root,
+            include_season_stats=not args.skip_season_stats,
+        )
+        log.info(f"Auto-update complete: {result}")
+
+    elif args.mode == "export-all":
+        seasons = loaded_seasons(con)
+        if not seasons:
+            log.warning("No seasons loaded. Nothing to export.")
+        else:
+            for s in seasons:
+                export_season_bundle(con, season=s, export_root=args.export_root)
+            log.info(f"Exported {len(seasons)} seasons to {args.export_root}/")
+
+    elif args.mode == "import-all":
+        root = Path(args.export_root)
+        if not root.exists():
+            raise SystemExit(f"Export root does not exist: {root}")
+        bundles = sorted(root.glob("season=*"))
+        if not bundles:
+            raise SystemExit(f"No season bundles found in {root}")
+        for bundle in bundles:
+            import_season_bundle(con, str(bundle))
+        enrich_players(con)
+        log.info(f"Imported {len(bundles)} season bundles from {root}")
 
     elif args.mode == "enrich":
         enrich_players(con)
